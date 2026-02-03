@@ -1,1 +1,1056 @@
+//+------------------------------------------------------------------+
+//|     Grid_Bot_UNIFIED_FIXED.mq5                                   |
+//|     Ana nokta MAVİLİM | TP + gürültü iki tarafta | Kendini yeniler |
+//+------------------------------------------------------------------+
+#property copyright "Grid Bot UNIFIED - Mavilim merkezli"
+#property version   "1.02"
+#property strict
+
+//+------------------------------------------------------------------+
+//| INPUT PARAMETRELERİ                                              |
+//+------------------------------------------------------------------+
+input group "=== 1. GÜRÜLTÜ VE GRID (Ana: Mavilim) ==="
+input double    BandMultiplier = 0.7;        // Ana band: ATR x bu kat (3 dk ATR'ye bağlı)
+input int       ATRPeriod = 14;              // ATR periyodu (3 dk)
+input double    GridEndPip = 5000.0;          // Bitiş / Max İşlem Alanı (Puan) 500 pip
+input double    ExpGridRatio = 1.10;         // Katlanma Oranı (düşük = daha sık emir)
+input int       MaxGridOrders = 25;           // Max Emir (risk kontrolü)
+input bool      UseSRMagnet = true;          // Mıknatıs Modu
+
+input group "=== 2. HEDEF (MAVİLİM TP) - Her şey Mavilim'e bağlı ==="
+input bool      ExactMavilimTP = true;       // TP Mavilim referanslı
+input bool      TPAtNoiseBandEdge = true;    // TP gürültü bandının kenarında (true ise offset yok sayılır)
+input bool      CloseInNoiseZone = true;     // Banda girince tüm pozisyonları kapat
+input double    MinProfitPoints = 5.0;       // Min kar mesafesi (TP açılıştan en az bu kadar uzak)
+input bool      UseTrailingTP = true;        // Trailing TP: Fiyat Mavilim'e yaklaşırken TP'yi çek (kar kilitle)
+input double    TrailingPips = 5.0;          // Trailing mesafesi (pip)
+
+input group "=== 3. KALAN BAKİYE (Zarardan kurtulma rezervi) ==="
+input bool      UseRemainingBalance = true;  // Kalan bakiyenin yarısını kullan
+input double    RezervYuzde = 10.0;          // Rezerv (%) - bu kadar bakiye kullanılmaz
+input double    MaxBalanceUsage = 0.5;       // Kalan bakiyenin bu kadarı lot için (0.5 = yarısı)
+
+input group "=== 4. GENEL AYARLAR ==="
+input bool      UseDynamicLot = true;        // Dinamik lot (kalan bakiye yarısı)
+input double    BaseLotSize = 0.01;          // Banda yakın base lot (küçük)
+input double    LotMultiplier1 = 1.1;        // İlk 100 pip için çarpan (düşük risk)
+input double    LotMultiplier2 = 1.3;        // Sonraki 200 pip için çarpan (orta risk)
+input double    LotMultiplier3 = 1.5;        // Kalan 200 pip için çarpan (yüksek kar)
+input double    Zone1Pip = 1000.0;           // 1. bölge sınırı (100 pip)
+input double    Zone2Pip = 3000.0;           // 2. bölge sınırı (300 pip = 100+200)
+input int       MagicNumber = 202499;
+input int       SlippagePoints = 100;        // Slippage (Puan)
+input bool      SingleDirectionOnly = false;
+
+input group "=== 4B. RİSK YÖNETİMİ / ÇIKIŞ ==="
+input bool      EnableRiskManagement = true;
+input int       MaxOpenPositions = 25;
+input double    MaxTotalLots = 5.0;
+input double    MaxDailyLossPercent = 5.0;
+input double    MaxDrawdownPercent = 25.0;
+input bool      EmergencyCloseOnRisk = true;
+input bool      UseBasketExit = true;
+input double    BasketTakeProfitMoney = 0.0;
+input double    BasketStopLossMoney = 0.0;
+input int       RiskRecheckSeconds = 5;
+
+input group "=== 4C. TERS İŞLEM (Mavilim'e doğru) ==="
+input bool      EnableReverseTrade = true;       // Mavilim yönünde ters işlem aç
+input double    ReverseLotSize = 0.01;           // Ters işlem lot
+input double    ReverseMaxLot = 1.0;             // Max ters işlem lot
+
+input group "=== 5. DESTEK/DİRENÇ (Zarardan kurtulma - S/R'da işlem) ==="
+input bool      UseSRFilterForRecovery = true;  // Sadece destek/dirence yakın işlem aç (zarardan kurtul)
+input double    SRFilterPips = 15.0;            // Destek/direnç yakınlık (pip) - bu mesafede emir
+
+input group "=== 6. MAVİLİM W (Pine: @mavilim0732) ==="
+input bool      ShowMavilimOnChart = true;   // 3 dk grafikte Mavilim çizgisini göster
+input int       RecheckSeconds = 60;        // Kararları yenileme aralığı (saniye)
+
+// MavilimW = WMA zinciri: close -> WMA(3) -> WMA(5) -> WMA(8) -> WMA(13) -> WMA(21) -> WMA(34)
+// Periyotlar Pine ile aynı: fmal=3, smal=5, tmal=8, Fmal=13, Ftmal=21, Smal=34
+
+//+------------------------------------------------------------------+
+//| GLOBAL DEĞİŞKENLER                                               |
+//+------------------------------------------------------------------+
+double currentMavilimW = 0.0;
+double currentATR = 0.0;
+double pointValue = 0.0;
+double gridPrices[];
+int totalGrids = 0;
+datetime lastRecheckTime = 0;   // Kendini yenileme zamanı
+
+bool tradingBlocked = false;
+datetime dayStartTime = 0;
+double dayStartEquity = 0.0;
+double peakEquity = 0.0;
+datetime lastRiskCheckTime = 0;
+
+struct SRLevel { double price; bool isSupport; };  // isSupport: true=destek, false=direnç
+SRLevel srLevels[];
+
+//+------------------------------------------------------------------+
+//| FONKSİYON PROTOTİPLERİ                                           |
+//+------------------------------------------------------------------+
+void ManagePositions();
+void ManageGridSystem();
+void GenerateGridLevels(double basePrice, bool isBuy);
+void ScanForSR();
+double FindNearestSR(double price);
+void PlacePendingOrders(bool isBuy);
+int CountPositions(ENUM_POSITION_TYPE type);
+int CountOrders(ENUM_ORDER_TYPE type);
+void DeletePendingOrders();
+double CalculateMavilimMQL5();
+double NormalizeLot(double lot);
+ENUM_ORDER_TYPE_FILLING GetFillingMode();
+void DrawMavilimLine();
+void RemoveMavilimLine();
+double GetTPPrice(bool isBuy);
+double GetValidTPForPosition(bool isBuy, double openPrice);
+double GetDynamicBaseLot();                  // Kalan bakiye yarısına göre base lot
+double GetTrailingTP(bool isBuy, double openPrice, double currentTP);  // Trailing TP
+bool IsPriceNearSupport(double price);       // Fiyat destek yakınında mı (BUY için)
+bool IsPriceNearResistance(double price);    // Fiyat direnç yakınında mı (SELL için)
+void CheckNoiseZoneClose();                  // Gürültü bandına girince kârdaki pozisyonları kapat
+void CloseAllPositions();                    // Tüm pozisyonları kapat (bu EA)
+void CloseHalfPositions();                   // Pozisyonların yarısını kapat
+void UpdateRiskState();
+bool IsTradingAllowed();
+double GetEATotalLots();
+double GetEATotalProfit();
+int GetEAPositionCount();
+void CheckBasketExit();
+void TryOpenReverseTrade();
+
+//+------------------------------------------------------------------+
+//| INIT                                                             |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+    pointValue = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+    if(pointValue <= 0) return INIT_FAILED;
+
+    ArrayResize(gridPrices, MaxGridOrders + 5);
+
+    Print(">>> Grid_Bot UNIFIED FIXED - MavilimW (3,5,8,13,21,34) <<<");
+
+    dayStartTime = TimeCurrent();
+    dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+    peakEquity = dayStartEquity;
+    return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| DEINIT                                                           |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+    RemoveMavilimLine();
+}
+
+//+------------------------------------------------------------------+
+//| ON TICK                                                          |
+//+------------------------------------------------------------------+
+double CalculateATR()
+{
+    double atr[];
+    ArraySetAsSeries(atr, true);
+    int handle = iATR(_Symbol, PERIOD_M3, ATRPeriod);
+    if(handle == INVALID_HANDLE) return 0;
+    if(CopyBuffer(handle, 0, 0, 1, atr) < 1) return 0;
+    IndicatorRelease(handle);
+    return atr[0];
+}
+
+void OnTick()
+{
+    currentMavilimW = CalculateMavilimMQL5();
+    currentATR = CalculateATR();
+
+    if(ShowMavilimOnChart && currentMavilimW > 0)
+        DrawMavilimLine();
+
+    if(CloseInNoiseZone && currentMavilimW > 0)
+        CheckNoiseZoneClose();
+
+    UpdateRiskState();
+    CheckBasketExit();
+    TryOpenReverseTrade();
+
+    ManagePositions();
+
+    if(currentMavilimW == 0) return;
+
+    // Periyodik kendini yenile: kararları sorgula, gürültü bandını kontrol et
+    if(RecheckSeconds > 0 && TimeCurrent() - lastRecheckTime >= RecheckSeconds)
+    {
+        lastRecheckTime = TimeCurrent();
+        double dist = MathAbs(SymbolInfoDouble(_Symbol, SYMBOL_BID) - currentMavilimW);
+        double noiseBand = currentATR * BandMultiplier;
+        if(dist < noiseBand)
+            DeletePendingOrders();   // Gürültü bandındaysak bekleyen emirleri iptal et
+    }
+
+    ManageGridSystem();
+}
+
+void UpdateRiskState()
+{
+    if(!EnableRiskManagement)
+    {
+        tradingBlocked = false;
+        return;
+    }
+
+    datetime now = TimeCurrent();
+    if(RiskRecheckSeconds > 0 && (now - lastRiskCheckTime) < RiskRecheckSeconds)
+        return;
+    lastRiskCheckTime = now;
+
+    MqlDateTime dtNow;
+    TimeToStruct(now, dtNow);
+    MqlDateTime dtStart;
+    TimeToStruct(dayStartTime, dtStart);
+    if(dtNow.year != dtStart.year || dtNow.mon != dtStart.mon || dtNow.day != dtStart.day)
+    {
+        dayStartTime = now;
+        dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+        peakEquity = dayStartEquity;
+        tradingBlocked = false;
+    }
+
+    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+    if(equity > peakEquity) peakEquity = equity;
+
+    bool riskBreach = false;
+
+    if(MaxOpenPositions > 0 && GetEAPositionCount() >= MaxOpenPositions)
+        riskBreach = true;
+
+    if(MaxTotalLots > 0 && GetEATotalLots() > MaxTotalLots)
+        riskBreach = true;
+
+    if(MaxDailyLossPercent > 0 && dayStartEquity > 0)
+    {
+        double dailyLossPct = (dayStartEquity - equity) * 100.0 / dayStartEquity;
+        if(dailyLossPct >= MaxDailyLossPercent)
+            riskBreach = true;
+    }
+
+    if(MaxDrawdownPercent > 0 && peakEquity > 0)
+    {
+        double ddPct = (peakEquity - equity) * 100.0 / peakEquity;
+        if(ddPct >= MaxDrawdownPercent)
+            riskBreach = true;
+    }
+
+    if(riskBreach)
+    {
+        tradingBlocked = true;
+        if(EmergencyCloseOnRisk)
+        {
+            DeletePendingOrders();
+            CloseAllPositions();
+        }
+    }
+}
+
+bool IsTradingAllowed()
+{
+    if(!EnableRiskManagement) return true;
+    if(tradingBlocked) return false;
+    return true;
+}
+
+int GetEAPositionCount()
+{
+    int count = 0;
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        if(PositionGetTicket(i) == 0) continue;
+        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+        count++;
+    }
+    return count;
+}
+
+double GetEATotalLots()
+{
+    double lots = 0.0;
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        if(PositionGetTicket(i) == 0) continue;
+        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+        lots += PositionGetDouble(POSITION_VOLUME);
+    }
+    return lots;
+}
+
+double GetEATotalProfit()
+{
+    double totalProfit = 0.0;
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        if(PositionGetTicket(i) == 0) continue;
+        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+        totalProfit += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+    }
+    return totalProfit;
+}
+
+void CheckBasketExit()
+{
+    if(!UseBasketExit) return;
+    if(!EnableRiskManagement) return;
+    if(BasketTakeProfitMoney <= 0.0 && BasketStopLossMoney <= 0.0) return;
+
+    double totalProfit = GetEATotalProfit();
+
+    if(BasketTakeProfitMoney > 0.0 && totalProfit >= BasketTakeProfitMoney)
+    {
+        DeletePendingOrders();
+        CloseAllPositions();
+        return;
+    }
+
+    if(BasketStopLossMoney > 0.0 && totalProfit <= -MathAbs(BasketStopLossMoney))
+    {
+        DeletePendingOrders();
+        CloseAllPositions();
+        tradingBlocked = true;
+        return;
+    }
+}
+
+void TryOpenReverseTrade()
+{
+    if(!EnableReverseTrade) return;
+    if(!IsTradingAllowed()) return;
+    if(currentMavilimW <= 0) return;
+
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+    // Fiyat bandın dışında olmalı - ölü alanda işlem açma
+    double bandDist = currentATR * BandMultiplier;
+    double dist = MathAbs(bid - currentMavilimW);
+    if(dist < bandDist) return;
+
+    bool goingBuy = (bid < currentMavilimW);
+
+    ENUM_POSITION_TYPE targetType = goingBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+    if(CountPositions(targetType) > 0) return;
+
+    double lot = NormalizeLot(MathMin(ReverseLotSize, ReverseMaxLot));
+    if(lot <= 0.0) return;
+
+    MqlTradeRequest req = {};
+    MqlTradeResult res = {};
+    req.action = TRADE_ACTION_DEAL;
+    req.symbol = _Symbol;
+    req.magic = MagicNumber;
+    req.volume = lot;
+    req.deviation = SlippagePoints;
+    req.type_filling = GetFillingMode();
+
+    if(goingBuy)
+    {
+        req.type = ORDER_TYPE_BUY;
+        req.price = ask;
+        double tp = GetTPPrice(true);
+        if(tp > 0 && tp > ask) req.tp = tp;
+    }
+    else
+    {
+        req.type = ORDER_TYPE_SELL;
+        req.price = bid;
+        double tp = GetTPPrice(false);
+        if(tp > 0 && tp < bid) req.tp = tp;
+    }
+
+    if(!OrderSend(req, res))
+        Print("Ters işlem hatası: ", res.retcode);
+    else
+        Print(">>> Ters işlem açıldı: ", goingBuy ? "BUY" : "SELL", " lot=", lot);
+}
+
+//+------------------------------------------------------------------+
+//| WMA (Linear Weighted) - Pine wma() ile aynı                      |
+//| series: fiyat dizisi (0 = güncel bar), period: periyot           |
+//+------------------------------------------------------------------+
+double WMAAt(const double &series[], int seriesLen, int idx, int period)
+{
+    if(idx + period > seriesLen || period <= 0) return 0;
+    double sum = 0, weightSum = 0;
+    for(int j = 0; j < period; j++)
+    {
+        double w = (double)(period - j);
+        sum += w * series[idx + j];
+        weightSum += w;
+    }
+    return (weightSum > 0) ? sum / weightSum : 0;
+}
+
+//+------------------------------------------------------------------+
+//| MAVİLİM W - Pine script ile birebir (MavilimW @mavilim0732)      |
+//| M1=wma(close,3), M2=wma(M1,5), M3=wma(M2,8), M4=wma(M3,13),       |
+//| M5=wma(M4,21), MAVW=wma(M5,34)                                   |
+//+------------------------------------------------------------------+
+double CalculateMavilimMQL5()
+{
+    const int BARS_NEEDED = 90;  // MavilimW zinciri için (34+21+13+8+5+3 + margin)
+    double close[];
+    ArraySetAsSeries(close, true);
+    if(CopyClose(_Symbol, PERIOD_M3, 0, BARS_NEEDED, close) < BARS_NEEDED) return 0;  // Backtest: M3 veri yoksa 0
+
+    int n = ArraySize(close);
+    double M1[], M2[], M3[], M4[], M5[];
+    ArrayResize(M1, n); ArrayResize(M2, n); ArrayResize(M3, n);
+    ArrayResize(M4, n); ArrayResize(M5, n);
+
+    // Pine: fmal=3, smal=5, tmal=8, Fmal=13, Ftmal=21, Smal=34
+    for(int i = 0; i < n; i++) M1[i] = WMAAt(close, n, i, 3);
+    for(int i = 0; i < n; i++) M2[i] = WMAAt(M1, n, i, 5);
+    for(int i = 0; i < n; i++) M3[i] = WMAAt(M2, n, i, 8);
+    for(int i = 0; i < n; i++) M4[i] = WMAAt(M3, n, i, 13);
+    for(int i = 0; i < n; i++) M5[i] = WMAAt(M4, n, i, 21);
+    double MAVW = WMAAt(M5, n, 0, 34);
+    return (MAVW > 0) ? MAVW : 0;
+}
+
+//+------------------------------------------------------------------+
+//| LOT NORMALİZASYONU                                               |
+//+------------------------------------------------------------------+
+double NormalizeLot(double lot)
+{
+    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+    double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+    lot = MathMax(minLot, MathMin(maxLot, lot));
+    lot = MathFloor(lot / lotStep) * lotStep;
+    return lot;
+}
+
+//+------------------------------------------------------------------+
+//| BROKER FILLING MODE                                              |
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE_FILLING GetFillingMode()
+{
+    uint filling = (uint)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+    if((filling & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+        return ORDER_FILLING_FOK;
+    if((filling & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+        return ORDER_FILLING_IOC;
+    return ORDER_FILLING_RETURN;
+}
+
+//+------------------------------------------------------------------+
+//| 3 DK GRAFİKTE MAVİLİM ÇİZGİSİ                                   |
+//+------------------------------------------------------------------+
+#define MAVILIM_OBJ_NAME "GridBot_Mavilim"
+#define BAND_UP "GridBot_BandUp"
+#define BAND_DN "GridBot_BandDn"
+
+void DrawBandLine(string name, double price, color clr, int style, int width)
+{
+    if(ObjectFind(0, name) < 0)
+    {
+        if(!ObjectCreate(0, name, OBJ_HLINE, 0, 0, price)) return;
+        ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+        ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
+        ObjectSetInteger(0, name, OBJPROP_BACK, true);
+        ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
+        ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+        ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+    }
+    ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+}
+
+void DrawMavilimLine()
+{
+    if(currentMavilimW <= 0) return;
+
+    double band = currentATR * BandMultiplier;
+
+    DrawBandLine(MAVILIM_OBJ_NAME, currentMavilimW, clrDodgerBlue, STYLE_SOLID, 2);
+    DrawBandLine(BAND_UP, currentMavilimW + band, clrOrange, STYLE_SOLID, 1);
+    DrawBandLine(BAND_DN, currentMavilimW - band, clrOrange, STYLE_SOLID, 1);
+
+    ChartRedraw(0);
+}
+
+void RemoveMavilimLine()
+{
+    ObjectDelete(0, MAVILIM_OBJ_NAME);
+    ObjectDelete(0, BAND_UP);
+    ObjectDelete(0, BAND_DN);
+    ChartRedraw(0);
+}
+
+//+------------------------------------------------------------------+
+//| Pip boyutu (5-digit: 1 pip=10 point, 3-digit: 1 pip=1 point)    |
+//+------------------------------------------------------------------+
+double GetPipSize()
+{
+    return (_Digits >= 4) ? pointValue * 10.0 : pointValue;
+}
+
+//+------------------------------------------------------------------+
+//| TP FİYATI - Gürültü bandının yakın kenarına                       |
+//| BUY (alttan açılır): TP = Mavilim - noiseBand (bandın alt kenarı) |
+//| SELL (üstten açılır): TP = Mavilim + noiseBand (bandın üst kenarı)|
+//+------------------------------------------------------------------+
+double GetTPPrice(bool isBuy)
+{
+    if(currentMavilimW <= 0) return 0;
+    double noiseBand = GetNoiseBandPoints() * pointValue;
+    if(isBuy)
+        return NormalizeDouble(currentMavilimW - noiseBand, _Digits);
+    else
+        return NormalizeDouble(currentMavilimW + noiseBand, _Digits);
+}
+
+// Pozisyon için geçerli TP (açılış fiyatına göre min kar koruması)
+double GetValidTPForPosition(bool isBuy, double openPrice)
+{
+    double tp = GetTPPrice(isBuy);
+    if(tp <= 0) return 0;
+    double minDist = MinProfitPoints * pointValue;
+    if(isBuy)  { if(tp <= openPrice + minDist) tp = NormalizeDouble(openPrice + minDist, _Digits); }
+    else       { if(tp >= openPrice - minDist) tp = NormalizeDouble(openPrice - minDist, _Digits); }
+    return tp;
+}
+
+//+------------------------------------------------------------------+
+//| KALAN BAKİYE - Rezerv düşülür, margin düşülür; yarısı lot için   |
+//| Mavilim'den uzaklaştıkça LotMultiplier ile lot büyür             |
+//+------------------------------------------------------------------+
+double GetDynamicBaseLot()
+{
+    if(!UseDynamicLot || MaxBalanceUsage <= 0) return BaseLotSize;
+
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    if(balance <= 0) return BaseLotSize;
+
+    double kalanBakiye = balance;
+    if(UseRemainingBalance)
+    {
+        double rezerv = balance * (RezervYuzde / 100.0);
+        double margin = AccountInfoDouble(ACCOUNT_MARGIN);
+        kalanBakiye = balance - rezerv - margin;
+        if(kalanBakiye <= 0) return BaseLotSize;
+    }
+
+    double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+    double price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    if(contractSize <= 0 || price <= 0) return BaseLotSize;
+
+    double sumMultiplier = 0;
+    double avgMultiplier = (LotMultiplier1 + LotMultiplier2 + LotMultiplier3) / 3.0;
+    if(MathAbs(avgMultiplier - 1.0) < 0.0001)
+        sumMultiplier = (double)MaxGridOrders;
+    else
+        sumMultiplier = (MathPow(avgMultiplier, MaxGridOrders) - 1.0) / (avgMultiplier - 1.0);
+
+    double maxNotional = kalanBakiye * MaxBalanceUsage;
+    double baseLot = maxNotional / (contractSize * price * sumMultiplier);
+    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+    baseLot = NormalizeLot(MathMax(minLot, MathMin(maxLot, baseLot)));
+    return MathMax(minLot, MathMin(maxLot, baseLot));
+}
+
+//+------------------------------------------------------------------+
+//| TRAILING TP - Fiyat Mavilim'e yaklaşırken TP'yi çek (kar kilitle) |
+//+------------------------------------------------------------------+
+double GetTrailingTP(bool isBuy, double openPrice, double currentTP)
+{
+    if(!UseTrailingTP || currentMavilimW <= 0) return 0;
+    double trailDist = TrailingPips * GetPipSize();
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double mavilimTP = GetTPPrice(isBuy);
+
+    if(isBuy)
+    {
+        if(bid <= openPrice) return currentTP;
+        double newTP = MathMin(bid - trailDist, mavilimTP);
+        if(newTP > currentTP && newTP > openPrice)
+            return NormalizeDouble(newTP, _Digits);
+    }
+    else
+    {
+        if(ask >= openPrice) return currentTP;
+        double newTP = MathMax(ask + trailDist, mavilimTP);
+        if(newTP < currentTP && newTP < openPrice)
+            return NormalizeDouble(newTP, _Digits);
+    }
+    return currentTP;
+}
+
+//+------------------------------------------------------------------+
+//| GRID YÖNETİMİ - Ana nokta Mavilim; gürültü 1.4x iki tarafta       |
+//| Emirler sadece gürültü x 1.4 bandının DIŞINDA dağılır (TP'ye kadar en kazançlı) |
+//+------------------------------------------------------------------+
+double GetNoiseBandPoints() { return currentATR * BandMultiplier / pointValue; }
+
+void ManageGridSystem()
+{
+    if(!IsTradingAllowed())
+    {
+        DeletePendingOrders();
+        return;
+    }
+
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+    // Fiyat bandın dışında olmalı
+    double bandDist = currentATR * BandMultiplier;
+    double dist = MathAbs(bid - currentMavilimW);
+    if(dist < bandDist)
+    {
+        DeletePendingOrders();
+        return;
+    }
+
+    bool isPriceAbove = (bid > currentMavilimW);
+    bool isPriceBelow = (ask < currentMavilimW);
+
+    if(isPriceAbove && (!SingleDirectionOnly))
+    {
+        if(CountOrders(ORDER_TYPE_SELL_LIMIT) == 0 && CountPositions(POSITION_TYPE_SELL) < MaxGridOrders)
+        {
+            GenerateGridLevels(currentMavilimW, false);
+            PlacePendingOrders(false);
+        }
+    }
+
+    if(isPriceBelow && (!SingleDirectionOnly))
+    {
+        if(CountOrders(ORDER_TYPE_BUY_LIMIT) == 0 && CountPositions(POSITION_TYPE_BUY) < MaxGridOrders)
+        {
+            GenerateGridLevels(currentMavilimW, true);
+            PlacePendingOrders(true);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| GRID SEVİYELERİ - İlk seviye gürültü x 1.4 bandının hemen dışında |
+//| Emirler bandın altına/üstüne dağılır, TP'ye gelene kadar en kazançlı senaryo |
+//+------------------------------------------------------------------+
+void GenerateGridLevels(double basePrice, bool isBuy)
+{
+    totalGrids = 0;
+    ArrayInitialize(gridPrices, 0.0);
+
+    ScanForSR();
+
+    // Emirler banddan başlar
+    double startDist = currentATR * BandMultiplier;
+    double currentPrice = isBuy ? (basePrice - startDist) : (basePrice + startDist);
+    double stepSize = (150.0 * pointValue);  // 15 pip başlangıç (daha sık emir)
+
+    for(int i = 0; i < MaxGridOrders; i++)
+    {
+        double targetPrice = currentPrice;
+
+        if(UseSRMagnet)
+        {
+            double sr = FindNearestSR(targetPrice);
+            double range = 250.0 * pointValue;
+            if(sr > 0 && MathAbs(targetPrice - sr) < range) targetPrice = sr;
+        }
+
+        gridPrices[totalGrids] = targetPrice;
+        totalGrids++;
+
+        if(isBuy) currentPrice = targetPrice - stepSize;
+        else      currentPrice = targetPrice + stepSize;
+
+        stepSize *= ExpGridRatio;
+
+        if(MathAbs(currentPrice - basePrice) / pointValue > GridEndPip) break;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| S/R TARAMA                                                       |
+//+------------------------------------------------------------------+
+void ScanForSR()
+{
+    ArrayResize(srLevels, 0);
+    int bars = 500;
+
+    double highBuffer[], lowBuffer[];
+    ArraySetAsSeries(highBuffer, true);
+    ArraySetAsSeries(lowBuffer, true);
+
+    if(CopyHigh(_Symbol, PERIOD_M3, 0, bars, highBuffer) < bars) return;
+    if(CopyLow(_Symbol, PERIOD_M3, 0, bars, lowBuffer) < bars) return;
+
+    for(int i = 5; i < bars-5; i++)
+    {
+        if(highBuffer[i] > highBuffer[i-1] && highBuffer[i] > highBuffer[i+1] &&
+           highBuffer[i] > highBuffer[i-2] && highBuffer[i] > highBuffer[i+2])
+        {
+            int s = ArraySize(srLevels);
+            ArrayResize(srLevels, s+1);
+            srLevels[s].price = highBuffer[i];
+            srLevels[s].isSupport = false;   // Direnç
+        }
+
+        if(lowBuffer[i] < lowBuffer[i-1] && lowBuffer[i] < lowBuffer[i+1])
+        {
+            int s = ArraySize(srLevels);
+            ArrayResize(srLevels, s+1);
+            srLevels[s].price = lowBuffer[i];
+            srLevels[s].isSupport = true;    // Destek
+        }
+    }
+}
+
+double FindNearestSR(double price)
+{
+    double nearest = 0;
+    double minDiff = 999999.0;
+
+    for(int i=0; i<ArraySize(srLevels); i++)
+    {
+        double diff = MathAbs(price - srLevels[i].price);
+        if(diff < minDiff)
+        {
+            minDiff = diff;
+            nearest = srLevels[i].price;
+        }
+    }
+    return nearest;
+}
+
+// Zarardan kurtulma: sadece destek/dirence yakın işlem aç
+double GetSRFilterDistance() { return SRFilterPips * GetPipSize(); }
+
+bool IsPriceNearSupport(double price)
+{
+    if(!UseSRFilterForRecovery) return true;
+    double dist = GetSRFilterDistance();
+    for(int i = 0; i < ArraySize(srLevels); i++)
+        if(srLevels[i].isSupport && MathAbs(price - srLevels[i].price) <= dist)
+            return true;
+    return false;
+}
+
+bool IsPriceNearResistance(double price)
+{
+    if(!UseSRFilterForRecovery) return true;
+    double dist = GetSRFilterDistance();
+    for(int i = 0; i < ArraySize(srLevels); i++)
+        if(!srLevels[i].isSupport && MathAbs(price - srLevels[i].price) <= dist)
+            return true;
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| EMİR GÖNDERME (type_filling + deviation + lot normalizasyonu)    |
+//+------------------------------------------------------------------+
+void PlacePendingOrders(bool isBuy)
+{
+    if(!IsTradingAllowed()) return;
+
+    int existingPos = isBuy ? CountPositions(POSITION_TYPE_BUY) : CountPositions(POSITION_TYPE_SELL);
+    double baseLot = UseDynamicLot ? GetDynamicBaseLot() : BaseLotSize;
+
+    for(int i = existingPos; i < totalGrids; i++)
+    {
+        if(MaxOpenPositions > 0 && GetEAPositionCount() >= MaxOpenPositions) break;
+        if(MaxTotalLots > 0 && GetEATotalLots() >= MaxTotalLots) break;
+
+        double price = gridPrices[i];
+        double currentPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+        // 3 katmanlı lot çarpanı: mesafeye göre
+        double distFromMavilim = MathAbs(price - currentMavilimW) / pointValue;
+        double multiplier;
+        if(distFromMavilim <= Zone1Pip)
+            multiplier = LotMultiplier1;      // İlk 100 pip: 1.1
+        else if(distFromMavilim <= Zone2Pip)
+            multiplier = LotMultiplier2;      // Sonraki 200 pip: 1.3
+        else
+            multiplier = LotMultiplier3;      // Kalan 200 pip: 1.5
+        
+        double lot = NormalizeLot(baseLot * MathPow(multiplier, i));
+
+        if(isBuy && price >= currentPrice) continue;
+        if(!isBuy && price <= currentPrice) continue;
+
+        double tp = GetTPPrice(isBuy);
+        if(tp <= 0) continue;
+        if(isBuy  && tp <= price) continue;   // BUY LIMIT: TP açılışın üstünde olmalı
+        if(!isBuy && tp >= price) continue;   // SELL LIMIT: TP açılışın altında olmalı
+
+        if(UseSRFilterForRecovery)
+        {
+            if(isBuy  && !IsPriceNearSupport(price)) continue;   // BUY sadece destek yakınında
+            if(!isBuy && !IsPriceNearResistance(price)) continue; // SELL sadece direnç yakınında
+        }
+
+        MqlTradeRequest req = {};
+        MqlTradeResult res = {};
+
+        req.action = TRADE_ACTION_PENDING;
+        req.symbol = _Symbol;
+        req.volume = lot;
+        req.price = NormalizeDouble(price, _Digits);
+        req.type = isBuy ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
+        req.magic = MagicNumber;
+        req.tp = tp;
+        req.deviation = SlippagePoints;
+        req.type_filling = GetFillingMode();
+
+        if(!OrderSend(req, res))
+            Print("Emir Gönderme Hatası: ", res.retcode);
+        Sleep(50);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| BAND KAPAMA: İç band -> tümü kapat, Dış band -> yarısını kapat    |
+//+------------------------------------------------------------------+
+void CheckNoiseZoneClose()
+{
+    if(currentMavilimW <= 0) return;
+
+    double innerBand = GetNoiseBandPoints() * pointValue;
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double distFromMavilim = MathAbs(bid - currentMavilimW);
+
+    bool inBand = (distFromMavilim < innerBand);
+
+    if(!CloseInNoiseZone || !inBand) return;
+
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket == 0) continue;
+        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+        double profit = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+
+        ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+        double vol = PositionGetDouble(POSITION_VOLUME);
+
+        MqlTradeRequest req = {};
+        MqlTradeResult res = {};
+        req.action = TRADE_ACTION_DEAL;
+        req.symbol = _Symbol;
+        req.volume = vol;
+        req.position = ticket;
+        req.deviation = SlippagePoints;
+        req.magic = MagicNumber;
+        req.type_filling = GetFillingMode();
+
+        if(posType == POSITION_TYPE_BUY)
+        {
+            req.type = ORDER_TYPE_SELL;
+            req.price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        }
+        else
+        {
+            req.type = ORDER_TYPE_BUY;
+            req.price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+        }
+
+        if(OrderSend(req, res))
+            Print(">>> Gürültü bandı kâr kapatma: #", ticket, " profit=", profit);
+        else
+            Print("Gürültü bandı kapatma hatası #", ticket, " retcode=", res.retcode);
+    }
+}
+
+void CloseAllPositions()
+{
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket == 0) continue;
+        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+        ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+        double vol = PositionGetDouble(POSITION_VOLUME);
+
+        MqlTradeRequest req = {};
+        MqlTradeResult res = {};
+        req.action = TRADE_ACTION_DEAL;
+        req.symbol = _Symbol;
+        req.volume = vol;
+        req.position = ticket;
+        req.deviation = SlippagePoints;
+        req.magic = MagicNumber;
+        req.type_filling = GetFillingMode();
+
+        if(posType == POSITION_TYPE_BUY)
+        {
+            req.type = ORDER_TYPE_SELL;
+            req.price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        }
+        else
+        {
+            req.type = ORDER_TYPE_BUY;
+            req.price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+        }
+
+        if(!OrderSend(req, res))
+            Print("Kapatma hatası #", ticket, " retcode=", res.retcode);
+        else
+            Sleep(100);
+    }
+}
+
+void CloseHalfPositions()
+{
+    int totalPos = GetEAPositionCount();
+    if(totalPos <= 1) return;
+    
+    int toClose = totalPos / 2;
+    int closed = 0;
+    
+    for(int i = PositionsTotal() - 1; i >= 0 && closed < toClose; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket == 0) continue;
+        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+        ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+        double vol = PositionGetDouble(POSITION_VOLUME);
+
+        MqlTradeRequest req = {};
+        MqlTradeResult res = {};
+        req.action = TRADE_ACTION_DEAL;
+        req.symbol = _Symbol;
+        req.volume = vol;
+        req.position = ticket;
+        req.deviation = SlippagePoints;
+        req.magic = MagicNumber;
+        req.type_filling = GetFillingMode();
+
+        if(posType == POSITION_TYPE_BUY)
+        {
+            req.type = ORDER_TYPE_SELL;
+            req.price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        }
+        else
+        {
+            req.type = ORDER_TYPE_BUY;
+            req.price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+        }
+
+        if(OrderSend(req, res))
+        {
+            Print(">>> Dış band yarı kapatma: #", ticket);
+            closed++;
+            Sleep(100);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| POZİSYON YÖNETİMİ - TP güncelleme (yön bazlı)                    |
+//+------------------------------------------------------------------+
+void ManagePositions()
+{
+    if(!ExactMavilimTP || currentMavilimW <= 0) return;
+
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket == 0) continue;
+        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+        bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+        double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+        double currentTP = PositionGetDouble(POSITION_TP);
+        double currentSL = PositionGetDouble(POSITION_SL);
+
+        double targetTP = GetValidTPForPosition(isBuy, openPrice);
+        if(UseTrailingTP)
+        {
+            double trailingTP = GetTrailingTP(isBuy, openPrice, currentTP);
+            if(trailingTP > 0)
+            {
+                if(isBuy && trailingTP > targetTP) targetTP = trailingTP;
+                if(!isBuy && trailingTP < targetTP) targetTP = trailingTP;
+            }
+        }
+        if(targetTP <= 0) continue;
+        if(MathAbs(currentTP - targetTP) <= 10 * pointValue) continue;
+
+        MqlTradeRequest req = {};
+        MqlTradeResult res = {};
+        req.action = TRADE_ACTION_SLTP;
+        req.position = ticket;
+        req.tp = targetTP;
+        req.sl = currentSL;
+
+        if(!OrderSend(req, res))
+            Print("TP Güncelleme Hatası: ", res.retcode);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| YARDIMCI FONKSİYONLAR                                            |
+//+------------------------------------------------------------------+
+int CountPositions(ENUM_POSITION_TYPE type)
+{
+    int count = 0;
+    for(int i=PositionsTotal()-1; i>=0; i--)
+    {
+        if(PositionGetTicket(i) > 0 &&
+           PositionGetString(POSITION_SYMBOL) == _Symbol &&
+           PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
+           PositionGetInteger(POSITION_TYPE) == type) count++;
+    }
+    return count;
+}
+
+int CountOrders(ENUM_ORDER_TYPE type)
+{
+    int count = 0;
+    for(int i=OrdersTotal()-1; i>=0; i--)
+    {
+        if(OrderGetTicket(i) > 0 &&
+           OrderGetString(ORDER_SYMBOL) == _Symbol &&
+           OrderGetInteger(ORDER_MAGIC) == MagicNumber &&
+           OrderGetInteger(ORDER_TYPE) == type) count++;
+    }
+    return count;
+}
+
+void DeletePendingOrders()
+{
+    for(int i=OrdersTotal()-1; i>=0; i--)
+    {
+        ulong ticket = OrderGetTicket(i);
+        if(ticket == 0) continue;
+        if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+        if(OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
+
+        MqlTradeRequest req = {};
+        MqlTradeResult res = {};
+        req.action = TRADE_ACTION_REMOVE;
+        req.order = ticket;
+
+        if(!OrderSend(req, res))
+            Print("Silme Hatası: ", res.retcode);
+    }
+}
+//+------------------------------------------------------------------+
 
