@@ -25,12 +25,14 @@ input double    BandMultiplier = 0.5;        // Ana band: ATR x bu kat (3dk: 0.5
 
 input int       ATRPeriod = 10;              // ATR periyodu (3dk için kısa: 10)
 
-input double    GridEndPip = 6000.0;         // Bitiş / Max İşlem Alanı (Puan) [Optimize: 4000-8000, step 500]
+input double    GridEndPip = 9000.0;         // Bitiş / Max İşlem Alanı (Puan) = 900 pip
 
 input double    ExpGridRatio = 1.05;         // Katlanma Oranı (3dk: 1.05 daha sık)
 
-input int       MaxGridOrders = 0;           // 0 = Sınırsız emir
+input int       MaxGridOrders = 20;          // Tek yöne max işlem sayısı (Bölge1: 5, Bölge2: 15)
 input int       PendingOrderLevels = 5;      // Yakın kaç seviyeye pending order atılsın (0=kapalı)
+input double    TPDistanceFromMavilim = 20.0; // TP Mavilim'den kaç pip uzakta (BUY aşağı, SELL yukarı)
+input double    OrderStartOffset = 5.0;      // İşlem açma: TP'den kaç pip ötede başlasın
 
 input group "=== 3. GENEL AYARLAR ==="
 input bool      UseDynamicLot = false;       // Dinamik lot (KAPALI - sabit lot kullan)
@@ -50,6 +52,8 @@ input bool      UseBasketExit = true;
 input double    BasketTakeProfitMoney = 0.0;     // Para bazlı TP (0 = devre dışı)
 input double    BasketStopLossMoney = 0.0;       // 0 = Basket SL YOK
 input int       RiskRecheckSeconds = 5;
+input double    CloseAllProfitDistPip = 30.0;    // Tüm kârlı pozisyonları kapat: Mavilim'e bu kadar yakınlıkta (pip)
+input double    MinProfitToCloseAll = 0.0;       // Minimum toplam kar ($) - 0 = kontrol yok
 
 input group "=== 4C. TERS İŞLEM (MOTT çizgilerine doğru) ==="
 input bool      EnableReverseTrade = true;       // MOTT yönünde ters işlem aç
@@ -1229,19 +1233,18 @@ double GetNoiseBandPoints()
 }
 
 //+------------------------------------------------------------------+
-//| TP FİYATI - MOTT_LowerMid ve MOTT_UpperMid kenarlarına            |
-//| BUY (alttan açılır): TP = MOTT_LowerMid (gürültü alanının alt kenarı)
-//| SELL (üstten açılır): TP = MOTT_UpperMid (gürültü alanının üst kenarı)
+//| TP FİYATI - MOTT çizgilerine (kırmızı noktalar)                   |
+//| BUY: TP = MOTT_LowerMid (aşağıdaki kırmızı)                       |
+//| SELL: TP = MOTT_UpperMid (yukarıdaki kırmızı)                     |
 //+------------------------------------------------------------------+
 double GetTPPrice(bool isBuy)
 {
     if(MOTT_LowerMid <= 0 || MOTT_UpperMid <= 0) return 0;
     
-    // TP gürültü alanının kenarında
     if(isBuy)
-        return NormalizeDouble(MOTT_LowerMid, _Digits);   // BUY → TP = LowerMid
+        return NormalizeDouble(MOTT_LowerMid, _Digits);   // BUY → TP = LowerMid (kırmızı)
     else
-        return NormalizeDouble(MOTT_UpperMid, _Digits);   // SELL → TP = UpperMid
+        return NormalizeDouble(MOTT_UpperMid, _Digits);   // SELL → TP = UpperMid (kırmızı)
 }
 
 //+------------------------------------------------------------------+
@@ -1547,20 +1550,27 @@ void ManageGridSystem()
             DeleteAllPendingOrders();
     }
 
-    // GÜRÜLTÜ ALANI = MOTT_LowerMid ile MOTT_UpperMid arası
+    // İŞLEM AÇMA BÖLGESİ = Mavilim referanslı, TP'den OrderStartOffset pip ötede
     // Bu alanda işlem açılmaz
-    // BUY: Fiyat MOTT_LowerMid altında olmalı
-    // SELL: Fiyat MOTT_UpperMid üstünde olmalı
+    double tpOffset = TPDistanceFromMavilim * pointValue * 10.0;
+    double startOffset = OrderStartOffset * pointValue * 10.0;
     
-    bool inNoiseZone = (bid >= MOTT_LowerMid && bid <= MOTT_UpperMid);
+    // BUY: TP = Mavilim - tpOffset, Başlangıç = TP - startOffset
+    // SELL: TP = Mavilim + tpOffset, Başlangıç = TP + startOffset
+    double buyTP = currentMavilimW - tpOffset;
+    double sellTP = currentMavilimW + tpOffset;
+    double buyStartLevel = buyTP - startOffset;     // BUY başlangıç (TP'nin 5 pip altında)
+    double sellStartLevel = sellTP + startOffset;   // SELL başlangıç (TP'nin 5 pip üstünde)
     
-    // Debug: Her 30 saniyede gürültü durumunu logla
+    bool inNoiseZone = (bid >= buyStartLevel && bid <= sellStartLevel);
+    
+    // Debug: Her 30 saniyede durumu logla
     static datetime lastNoiseLog = 0;
     if(TimeCurrent() - lastNoiseLog >= 30)
     {
         lastNoiseLog = TimeCurrent();
-        double distPip = MathAbs(bid - currentMavilimW) / pointValue / 10.0;
-        Print(">>> NOISE: LowerMid=", MOTT_LowerMid, " UpperMid=", MOTT_UpperMid, " Bid=", bid, " inNoise=", inNoiseZone);
+        Print(">>> ZONE: Mavilim=", currentMavilimW, " BuyTP=", buyTP, " SellTP=", sellTP, 
+              " BuyStart=", buyStartLevel, " SellStart=", sellStartLevel, " Bid=", bid, " inNoise=", inNoiseZone);
     }
     
     // Gürültü alanındaysa seviye takibini sıfırla ve bekle
@@ -1820,75 +1830,79 @@ void CheckAndOpenByDistance(bool isBuy)
     // X = MOTT aralığı (temel mesafe birimi)
     // Gürültü alanı = 0.3X (Mavilim etrafı)
     // Bölge 1 = X pip, 7 grid (TP'ye yakın = geniş aralık)
-    // Bölge 2 = 1.5X pip, 15 grid (TP'den uzak = sık aralık)
     // MANTIK: TP'ye yakın geniş grid, uzaklaştıkça sıklaşan grid
     
-    // GÜRÜLTÜ ALANI = MOTT_LowerMid ile MOTT_UpperMid arası
-    // BUY için fiyat MOTT_LowerMid altında olmalı
-    // SELL için fiyat MOTT_UpperMid üstünde olmalı
+    // İŞLEM AÇMA BÖLGESİ = MOTT çizgileri (kırmızı noktalar) referanslı
+    // BUY: MOTT_LowerMid'den itibaren aşağıya
+    // SELL: MOTT_UpperMid'den itibaren yukarıya (offset yok, hemen başla)
     
-    // Fiyat gürültü alanının içindeyse işlem açma
-    if(price >= MOTT_LowerMid && price <= MOTT_UpperMid)
+    double buyTP = MOTT_LowerMid;           // BUY TP = kırmızı alt
+    double sellTP = MOTT_UpperMid;          // SELL TP = kırmızı üst
+    double buyStartLevel = MOTT_LowerMid;   // BUY başlangıç = kırmızıdan hemen sonra
+    double sellStartLevel = MOTT_UpperMid;  // SELL başlangıç = kırmızıdan hemen sonra
+    
+    // MOTT değerleri yoksa işlem açma
+    if(MOTT_LowerMid <= 0 || MOTT_UpperMid <= 0)
+        return;
+    
+    // Fiyat gürültü alanının içindeyse işlem açma (TP bölgesi)
+    if(price >= buyStartLevel && price <= sellStartLevel)
         return;
     
     // Fiyat doğru tarafta mı kontrol et
-    if(isBuy && price >= MOTT_LowerMid)
+    if(isBuy && price >= buyStartLevel)
         return;
-    if(!isBuy && price <= MOTT_UpperMid)
+    if(!isBuy && price <= sellStartLevel)
         return;
     
-    // X = MOTT aralığı pip cinsinden
-    double xPip = MathAbs(MOTT_Top - MOTT_Bottom) / pointValue / 10.0;
-    if(xPip < 30) xPip = 50;  // Minimum 30 pip
+    // 2 BÖLGELİ ARİTMETİK GRİD SİSTEMİ
+    // Bölge 1 (0-500 pip): Az emir, geniş aralık (5 grid) -> her 100 pip
+    // Bölge 2 (500-900 pip): Daha sık, aritmetik (15 grid) -> her ~27 pip
     
-    // Bölge mesafeleri
-    double zone1End = xPip;              // Bölge 1 = X pip
-    double zone2End = xPip * 2.5;        // Bölge 2 = +1.5X pip (toplam 2.5X)
+    double maxDistPip = GridEndPip / 10.0;  // Puan -> Pip = 900
+    double zone1End = 500.0;                 // İlk bölge: 0-500 pip
+    int zone1Grids = 5;                      // İlk bölgede 5 grid
+    int zone2Grids = 15;                     // 2. bölgede 15 grid (sık)
     
-    int zone1Grids = 7;    // Bölge 1'de 7 grid
-    int zone2Grids = 15;   // Bölge 2'de 15 grid
-    
-    // Gürültü kenarından mesafe
-    double noiseEdge = isBuy ? MOTT_LowerMid : MOTT_UpperMid;
-    double distFromNoise = 0;
+    // İşlem başlangıç noktasından mesafe (pip)
+    double distFromStart = 0;
     if(isBuy)
-        distFromNoise = (MOTT_LowerMid - price) / pointValue / 10.0;  // BUY: fiyat LowerMid'in ne kadar altında
+        distFromStart = (buyStartLevel - price) / pointValue / 10.0;
     else
-        distFromNoise = (price - MOTT_UpperMid) / pointValue / 10.0;  // SELL: fiyat UpperMid'in ne kadar üstünde
+        distFromStart = (price - sellStartLevel) / pointValue / 10.0;
     
-    // Mesafe negatifse (gürültü içinde) işlem açma
-    if(distFromNoise < 0)
+    // Mesafe negatifse işlem açma
+    if(distFromStart < 0)
         return;
     
-    // Hangi bölgedeyiz ve grid seviyesi
+    // Maksimum mesafeyi aşarsa işlem açma
+    if(distFromStart > maxDistPip)
+        return;
+    
+    // Grid seviyesi hesapla (2 bölgeli)
     int gridLevel = -1;
     double gridStep = 0;
     
-    // TP'YE YAKIN = GENİŞ GRİD, UZAKLAŞTIKÇA SIKLAŞAN GRİD
-    // Bölge 1: Geniş aralık (yakın)
-    // Bölge 2: Sık aralık (uzak)
-    
-    if(distFromNoise < zone1End)
+    if(distFromStart < zone1End)
     {
-        // BÖLGE 1: 7 grid, GENİŞ aralık (TP'ye yakın)
+        // BÖLGE 1: 0-300 pip, 5 grid, geniş aralık
         gridStep = zone1End / zone1Grids;
-        gridLevel = (int)(distFromNoise / gridStep);
+        gridLevel = (int)(distFromStart / gridStep);
         if(gridLevel >= zone1Grids) gridLevel = zone1Grids - 1;
-    }
-    else if(distFromNoise < zone2End)
-    {
-        // BÖLGE 2: 15 grid, SIK aralık (TP'den uzak)
-        double zone2Dist = distFromNoise - zone1End;
-        double zone2Range = zone2End - zone1End;  // 1.5X pip
-        gridStep = zone2Range / zone2Grids;
-        gridLevel = zone1Grids + (int)(zone2Dist / gridStep);
-        if(gridLevel >= zone1Grids + zone2Grids) gridLevel = zone1Grids + zone2Grids - 1;
     }
     else
     {
-        // Maksimum emir mesafesinin dışında - işlem yok
-        return;
+        // BÖLGE 2: 300+ pip, kalan gridler
+        double zone2Dist = distFromStart - zone1End;
+        double zone2Range = maxDistPip - zone1End;
+        gridStep = zone2Range / zone2Grids;
+        gridLevel = zone1Grids + (int)(zone2Dist / gridStep);
+        if(gridLevel >= MaxGridOrders) gridLevel = MaxGridOrders - 1;
     }
+    
+    // Maksimum işlem sayısını aşma
+    if(gridLevel >= MaxGridOrders)
+        return;
 
     
     if(gridLevel < 0) return;
@@ -1898,12 +1912,8 @@ void CheckAndOpenByDistance(bool isBuy)
     bool levelUsed = isBuy ? buyLevelUsed[gridLevel] : sellLevelUsed[gridLevel];
     if(levelUsed) return;
     
-    // Bekleme süresi - mesafeye göre azalt
-    int waitSeconds = 10;
-    if(distFromNoise > zone2End * 0.7)
-        waitSeconds = 3;
-    else if(distFromNoise > zone1End)
-        waitSeconds = 5;
+    // Bekleme süresi - sabit
+    int waitSeconds = 3;
     
     static datetime lastOrderTime = 0;
     if(TimeCurrent() - lastOrderTime < waitSeconds) return;
@@ -1914,19 +1924,13 @@ void CheckAndOpenByDistance(bool isBuy)
 
     double baseLot = UseDynamicLot ? GetDynamicBaseLot() : BaseLotSize;
     
-    // LOT HESAPLAMA: Bölge 1'de küçük, Bölge 2'de büyük
-    double lot;
-    if(gridLevel < zone1Grids)
-    {
-        // Bölge 1: Base lot x 1.0 - 1.5
-        lot = baseLot * (1.0 + (gridLevel * 0.05));
-    }
-    else
-    {
-        // Bölge 2: Base lot x 1.5 - 2.5
-        int zone2Level = gridLevel - zone1Grids;
-        lot = baseLot * (1.5 + (zone2Level * 0.04));
-    }
+    // LOT HESAPLAMA: Mavilim'den her GridStepPip uzaklaştıkça 1.5x artış
+    // Seviye 0: baseLot * 1.0
+    // Seviye 1: baseLot * 1.5
+    // Seviye 2: baseLot * 1.5^2 = 2.25
+    // Seviye 3: baseLot * 1.5^3 = 3.375
+    double lotMultiplier = MathPow(1.5, gridLevel);
+    double lot = baseLot * lotMultiplier;
     
     lot = NormalizeLot(lot);
     
@@ -1971,8 +1975,8 @@ void CheckAndOpenByDistance(bool isBuy)
         
         string zoneStr = (gridLevel < zone1Grids) ? "BÖLGE1" : "BÖLGE2";
         Print(">>> ", zoneStr, " EMİR: ", isBuy ? "BUY" : "SELL",
-              " seviye=", gridLevel, " mesafe=", DoubleToString(distFromNoise, 1), " pip", 
-              " MOTTRange=", DoubleToString(xPip, 1), " lot=", lot,
+              " seviye=", gridLevel, " mesafe=", DoubleToString(distFromStart, 1), " pip", 
+              " GridStep=", DoubleToString(gridStep, 1), " lot=", lot,
               " TP=", tp);
     }
     else
@@ -1982,14 +1986,18 @@ void CheckAndOpenByDistance(bool isBuy)
 }
 
 //+------------------------------------------------------------------+
-//| POZİSYON YÖNETİMİ - TP Mavilim'i takip eder (10 pip yakınında)    |
+//| POZİSYON YÖNETİMİ - TP her tick güncellenir                       |
 //+------------------------------------------------------------------+
 void ManagePositions()
 {
-    if(currentMavilimW <= 0) return;
+    if(MOTT_Middle <= 0) return;
+
+    // ÖNCE: Tüm pozisyonlar kârlı mı kontrol et ve kapat
+    CheckAndCloseAllIfProfitable();
 
     double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-    double minTPUpdateDist = 10 * pointValue;  // 10 pip = güncelleme eşiği
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double minTPUpdateDist = 3 * pointValue;  // 3 pip = güncelleme eşiği (düşürüldü)
 
     for(int i = PositionsTotal() - 1; i >= 0; i--)
     {
@@ -2003,20 +2011,38 @@ void ManagePositions()
         double currentTP = PositionGetDouble(POSITION_TP);
         double currentSL = PositionGetDouble(POSITION_SL);
 
-        // TP hedefi = Gürültü bandının kenarı (GetTPPrice kullan)
+        // TP hedefi = MOTT_LowerMid (BUY) veya MOTT_UpperMid (SELL)
         double targetTP = GetTPPrice(isBuy);
         
-        // Minimum kar mesafesi kontrolü (en az 10 pip kar)
-        double minProfitDist = 10 * pointValue;
-        if(isBuy && targetTP < openPrice + minProfitDist)
-            targetTP = NormalizeDouble(openPrice + minProfitDist, _Digits);
-        if(!isBuy && targetTP > openPrice - minProfitDist)
-            targetTP = NormalizeDouble(openPrice - minProfitDist, _Digits);
+        // Minimum kar mesafesi kontrolü (en az 5 pip kar)
+        double minProfitDist = 5 * pointValue;
+        if(isBuy)
+        {
+            // BUY için TP mevcut fiyatın üstünde olmalı
+            if(targetTP < openPrice + minProfitDist)
+                targetTP = NormalizeDouble(openPrice + minProfitDist, _Digits);
+            // TP mevcut bid'den en az 3 pip yukarıda olmalı
+            if(targetTP < bid + 3 * pointValue)
+                targetTP = NormalizeDouble(bid + 5 * pointValue, _Digits);
+        }
+        else
+        {
+            // SELL için TP mevcut fiyatın altında olmalı
+            if(targetTP > openPrice - minProfitDist)
+                targetTP = NormalizeDouble(openPrice - minProfitDist, _Digits);
+            // TP mevcut ask'ten en az 3 pip aşağıda olmalı
+            if(targetTP > ask - 3 * pointValue)
+                targetTP = NormalizeDouble(ask - 5 * pointValue, _Digits);
+        }
         
         if(targetTP <= 0) continue;
         
-        // TP değişikliği 10 pip'ten az ise güncelleme yapma (gereksiz istek önleme)
+        // TP değişikliği 3 pip'ten az ise güncelleme yapma
         if(MathAbs(currentTP - targetTP) < minTPUpdateDist) continue;
+        
+        // TP yönü doğru mu kontrol et
+        if(isBuy && targetTP <= bid) continue;  // BUY TP ask'ten yukarıda olmalı
+        if(!isBuy && targetTP >= ask) continue; // SELL TP bid'den aşağıda olmalı
 
         MqlTradeRequest req = {};
         MqlTradeResult res = {};
@@ -2027,9 +2053,78 @@ void ManagePositions()
         req.sl = currentSL;
 
         if(OrderSend(req, res))
-            Print(">>> TP GÜNCELLENDİ: #", ticket, " Yeni TP=", targetTP, " (Mavilim=", currentMavilimW, ")");
+            Print(">>> TP GÜNCELLENDİ: #", ticket, " Yeni TP=", targetTP, " MOTT_Mid=", MOTT_Middle);
         else
             Print("TP Güncelleme Hatası: ", res.retcode, " ", res.comment);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| TÜM POZİSYONLAR KÂRLI İSE HEPSİNİ KAPAT VE SIFIRLA               |
+//| Kapatma bölgesi: MOTT_LowerMid ile MOTT_UpperMid arası           |
+//+------------------------------------------------------------------+
+void CheckAndCloseAllIfProfitable()
+{
+    if(MOTT_LowerMid <= 0 || MOTT_UpperMid <= 0) return;
+    if(CloseAllProfitDistPip <= 0) return;  // 0 = bu özellik kapalı
+    
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    
+    // Fiyat MOTT_LowerMid veya MOTT_UpperMid'e ne kadar yakın? (pip cinsinden)
+    double distToLowerMid = MathAbs(bid - MOTT_LowerMid) / pointValue / 10.0;
+    double distToUpperMid = MathAbs(bid - MOTT_UpperMid) / pointValue / 10.0;
+    double distToTPZone = MathMin(distToLowerMid, distToUpperMid);
+    
+    // Fiyat TP bölgesine (LowerMid/UpperMid) yeterince yakın değilse çık
+    if(distToTPZone > CloseAllProfitDistPip) return;
+    
+    // VEYA fiyat LowerMid ile UpperMid arasındaysa (TP bölgesinin içinde)
+    bool inTPZone = (bid >= MOTT_LowerMid && bid <= MOTT_UpperMid);
+    
+    int posCount = 0;
+    int profitableCount = 0;
+    double totalProfit = 0;
+    
+    // Tüm pozisyonları say ve kârlı olanları kontrol et
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket == 0) continue;
+        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+        
+        posCount++;
+        double profit = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+        totalProfit += profit;
+        
+        if(profit > 0)
+            profitableCount++;
+    }
+    
+    // Hiç pozisyon yoksa çık
+    if(posCount == 0) return;
+    
+    // TÜM pozisyonlar kârlı mı? VE minimum kar eşiğini geçti mi?
+    bool profitOK = (MinProfitToCloseAll > 0) ? (totalProfit >= MinProfitToCloseAll) : (totalProfit > 0);
+    if(profitableCount == posCount && profitOK)
+    {
+        Print(">>> FİYAT MAVİLİM'E YAKIN (", DoubleToString(distToTPZone, 1), " pip) VE TÜM POZİSYONLAR KÂRLI!");
+        Print(">>> Toplam: ", posCount, " pozisyon, Kar: ", DoubleToString(totalProfit, 2));
+        Print(">>> HEPSİ KAPATILIYOR VE BOT SIFIRLANIYOR...");
+        
+        // Tüm pending emirleri sil
+        DeleteAllPendingOrders();
+        
+        // Tüm pozisyonları kapat
+        CloseAllPositions();
+        
+        // Seviye takibini sıfırla (bot baştan başlasın)
+        ResetLevelTracking();
+        
+        // Grid mesafelerini sıfırla
+        totalGrids = 0;
+        
+        Print(">>> BOT SIFIRLANDI - Yeniden emir atmaya hazır!");
     }
 }
 
