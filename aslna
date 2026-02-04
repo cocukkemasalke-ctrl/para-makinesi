@@ -1,71 +1,99 @@
 //+------------------------------------------------------------------+
 //|     Grid_Bot_UNIFIED_FIXED.mq5                                   |
-//|     Ana nokta MAVİLİM | TP + gürültü iki tarafta | Kendini yeniler |
+//|     Ana nokta MOTT | TP + gürültü iki tarafta | Kendini yeniler   |
 //+------------------------------------------------------------------+
-#property copyright "Grid Bot UNIFIED - Mavilim merkezli"
-#property version   "1.02"
+#property copyright "Grid Bot UNIFIED - MOTT merkezli"
+#property version   "2.00"
 #property strict
+
+#define REVERSE_LABEL "GridBot_ReverseLabel"
+#define MOTT_INFO_LABEL "GridBot_MOTTInfo"
+#define TLM_INFO_LABEL "GridBot_TLMInfo"
 
 //+------------------------------------------------------------------+
 //| INPUT PARAMETRELERİ                                              |
 //+------------------------------------------------------------------+
-input group "=== 1. GÜRÜLTÜ VE GRID (Ana: Mavilim) ==="
-input double    BandMultiplier = 0.7;        // Ana band: ATR x bu kat (3 dk ATR'ye bağlı)
-input int       ATRPeriod = 14;              // ATR periyodu (3 dk)
-input double    GridEndPip = 5000.0;          // Bitiş / Max İşlem Alanı (Puan) 500 pip
-input double    ExpGridRatio = 1.10;         // Katlanma Oranı (düşük = daha sık emir)
-input int       MaxGridOrders = 25;           // Max Emir (risk kontrolü)
-input bool      UseSRMagnet = true;          // Mıknatıs Modu
+input group "=== 1. MOTT (Multiple OTT) - 3DK OPTİMİZE ==="
+input int       MOTT_HighLowPeriod = 200;    // High/Low Periyodu (3dk: 200 bar = ~10 saat)
+input double    MOTT_OTTPercent = 0.8;       // OTT Yüzdesi (3dk için düşük: 0.8)
+input int       MOTT_Length = 3;             // VIDYA Uzunluğu (3dk için: 3)
+input bool      ShowMOTTOnChart = true;      // MOTT çizgilerini grafikte göster
 
-input group "=== 2. HEDEF (MAVİLİM TP) - Her şey Mavilim'e bağlı ==="
-input bool      ExactMavilimTP = true;       // TP Mavilim referanslı
-input bool      TPAtNoiseBandEdge = true;    // TP gürültü bandının kenarında (true ise offset yok sayılır)
-input bool      CloseInNoiseZone = true;     // Banda girince tüm pozisyonları kapat
-input double    MinProfitPoints = 5.0;       // Min kar mesafesi (TP açılıştan en az bu kadar uzak)
-input bool      UseTrailingTP = true;        // Trailing TP: Fiyat Mavilim'e yaklaşırken TP'yi çek (kar kilitle)
-input double    TrailingPips = 5.0;          // Trailing mesafesi (pip)
+input group "=== 2. GÜRÜLTÜ VE GRID (3DK OPTİMİZE) ==="
 
-input group "=== 3. KALAN BAKİYE (Zarardan kurtulma rezervi) ==="
-input bool      UseRemainingBalance = true;  // Kalan bakiyenin yarısını kullan
-input double    RezervYuzde = 10.0;          // Rezerv (%) - bu kadar bakiye kullanılmaz
-input double    MaxBalanceUsage = 0.5;       // Kalan bakiyenin bu kadarı lot için (0.5 = yarısı)
+input double    BandMultiplier = 0.5;        // Ana band: ATR x bu kat (3dk: 0.5 daha dar)
 
-input group "=== 4. GENEL AYARLAR ==="
-input bool      UseDynamicLot = true;        // Dinamik lot (kalan bakiye yarısı)
-input double    BaseLotSize = 0.01;          // Banda yakın base lot (küçük)
-input double    LotMultiplier1 = 1.1;        // İlk 100 pip için çarpan (düşük risk)
-input double    LotMultiplier2 = 1.3;        // Sonraki 200 pip için çarpan (orta risk)
-input double    LotMultiplier3 = 1.5;        // Kalan 200 pip için çarpan (yüksek kar)
-input double    Zone1Pip = 1000.0;           // 1. bölge sınırı (100 pip)
-input double    Zone2Pip = 3000.0;           // 2. bölge sınırı (300 pip = 100+200)
+input int       ATRPeriod = 10;              // ATR periyodu (3dk için kısa: 10)
+
+input double    GridEndPip = 6000.0;         // Bitiş / Max İşlem Alanı (Puan) [Optimize: 4000-8000, step 500]
+
+input double    ExpGridRatio = 1.05;         // Katlanma Oranı (3dk: 1.05 daha sık)
+
+input int       MaxGridOrders = 0;           // 0 = Sınırsız emir
+input int       PendingOrderLevels = 5;      // Yakın kaç seviyeye pending order atılsın (0=kapalı)
+
+input group "=== 3. GENEL AYARLAR ==="
+input bool      UseDynamicLot = false;       // Dinamik lot (KAPALI - sabit lot kullan)
+input double    BaseLotSize = 0.01;          // Base lot
 input int       MagicNumber = 202499;
 input int       SlippagePoints = 100;        // Slippage (Puan)
 input bool      SingleDirectionOnly = false;
 
-input group "=== 4B. RİSK YÖNETİMİ / ÇIKIŞ ==="
-input bool      EnableRiskManagement = true;
-input int       MaxOpenPositions = 25;
-input double    MaxTotalLots = 5.0;
-input double    MaxDailyLossPercent = 5.0;
-input double    MaxDrawdownPercent = 25.0;
-input bool      EmergencyCloseOnRisk = true;
+input group "=== 4B. RİSK YÖNETİMİ / ÇIKIŞ (STOP YOK - SADECE TP) ==="
+input bool      EnableRiskManagement = false;    // KAPALI - Stop yok
+input int       MaxOpenPositions = 0;            // 0 = Sınırsız pozisyon
+input double    MaxTotalLots = 10.0;             // Daha fazla lot izni
+input double    MaxDailyLossPercent = 0.0;       // 0 = Günlük zarar limiti YOK
+input double    MaxDrawdownPercent = 0.0;        // 0 = Drawdown limiti YOK
+input bool      EmergencyCloseOnRisk = false;    // KAPALI - Acil kapatma yok
 input bool      UseBasketExit = true;
-input double    BasketTakeProfitMoney = 0.0;
-input double    BasketStopLossMoney = 0.0;
+input double    BasketTakeProfitMoney = 0.0;     // Para bazlı TP (0 = devre dışı)
+input double    BasketStopLossMoney = 0.0;       // 0 = Basket SL YOK
 input int       RiskRecheckSeconds = 5;
 
-input group "=== 4C. TERS İŞLEM (Mavilim'e doğru) ==="
-input bool      EnableReverseTrade = true;       // Mavilim yönünde ters işlem aç
-input double    ReverseLotSize = 0.01;           // Ters işlem lot
+input group "=== 4C. TERS İŞLEM (MOTT çizgilerine doğru) ==="
+input bool      EnableReverseTrade = true;       // MOTT yönünde ters işlem aç
+input double    ReverseLotSize = 0.01;           // Ters işlem base lot
 input double    ReverseMaxLot = 1.0;             // Max ters işlem lot
+input double    ReverseZone1Pip = 50.0;          // 1. bölge: 0-50 pip (lot x1.0)
+input double    ReverseZone2Pip = 100.0;         // 2. bölge: 50-100 pip (lot x1.5)
+input double    ReverseZone3Pip = 150.0;         // 3. bölge: 100-150 pip (lot x2.0)
+input double    ReverseLotMult1 = 1.0;           // 1. bölge lot çarpanı
+input double    ReverseLotMult2 = 1.5;           // 2. bölge lot çarpanı
+input double    ReverseLotMult3 = 2.0;           // 3. bölge lot çarpanı (en yakın)
 
 input group "=== 5. DESTEK/DİRENÇ (Zarardan kurtulma - S/R'da işlem) ==="
 input bool      UseSRFilterForRecovery = true;  // Sadece destek/dirence yakın işlem aç (zarardan kurtul)
 input double    SRFilterPips = 15.0;            // Destek/direnç yakınlık (pip) - bu mesafede emir
 
-input group "=== 6. MAVİLİM W (Pine: @mavilim0732) ==="
-input bool      ShowMavilimOnChart = true;   // 3 dk grafikte Mavilim çizgisini göster
+input group "=== 6. GENEL ==="
 input int       RecheckSeconds = 60;        // Kararları yenileme aralığı (saniye)
+
+input group "=== 7. TLM - PIVOT SPAN TRENDLINE (Method 1) ==="
+input bool      UsePivotSpanTrend = true;       // Pivot Span Trendline kullan
+input int       TLM_PivotLeft = 5;              // Pivot Sol (bar sayısı)
+input int       TLM_PivotRight = 5;             // Pivot Sağ (bar sayısı)
+input int       TLM_PivotCount = 3;             // Pivot Sayısı (kaç pivot tutulsun)
+input int       TLM_LookbackLength = 100;       // Geriye Bakış Uzunluğu (bar)
+input color     TLM_HighLineColor = clrCyan;    // Üst trend çizgisi rengi
+input color     TLM_LowLineColor = clrMagenta;  // Alt trend çizgisi rengi
+
+input group "=== 8. TLM - 5-POINT STRAIGHT CHANNEL (Method 2) ==="
+input bool      Use5PointChannel = true;        // 5-Point Channel kullan
+input int       TLM_ChannelLength = 50;         // Kanal Uzunluğu (bar)
+input color     TLM_ChannelHighColor = clrLime; // Üst kanal çizgisi rengi
+input color     TLM_ChannelLowColor = clrOrange;// Alt kanal çizgisi rengi
+
+input group "=== 9. RSI + MACD FİLTRESİ (3dk Optimize) ==="
+input bool      UseRSIFilter = false;        // RSI filtresi kullan (true=aktif)
+input int       RSIPeriod = 7;               // RSI periyodu (3dk için kısa)
+input double    RSIOverbought = 65.0;        // Aşırı alım seviyesi (SELL sinyali) - Gevşetildi
+input double    RSIOversold = 35.0;          // Aşırı satım seviyesi (BUY sinyali) - Gevşetildi
+input bool      UseMACDFilter = false;       // MACD trend filtresi (true=aktif)
+input int       MACDFast = 6;                // MACD hızlı EMA (3dk için hızlı)
+input int       MACDSlow = 13;               // MACD yavaş EMA (3dk için hızlı)
+input int       MACDSignal = 4;              // MACD sinyal periyodu (3dk için hızlı)
+
 
 // MavilimW = WMA zinciri: close -> WMA(3) -> WMA(5) -> WMA(8) -> WMA(13) -> WMA(21) -> WMA(34)
 // Periyotlar Pine ile aynı: fmal=3, smal=5, tmal=8, Fmal=13, Ftmal=21, Smal=34
@@ -74,11 +102,18 @@ input int       RecheckSeconds = 60;        // Kararları yenileme aralığı (s
 //| GLOBAL DEĞİŞKENLER                                               |
 //+------------------------------------------------------------------+
 double currentMavilimW = 0.0;
+double prevMavilimW = 0.0;      // Önceki Mavilim değeri (trend rengi için)
+int mavilimTrend = 0;           // 1=Yukarı (mavi), -1=Aşağı (kırmızı), 0=Nötr (sarı)
 double currentATR = 0.0;
 double pointValue = 0.0;
-double gridPrices[];
+double gridDistances[];           // Mavilim'den mesafe seviyeleri (pip cinsinden)
 int totalGrids = 0;
-datetime lastRecheckTime = 0;   // Kendini yenileme zamanı
+datetime lastRecheckTime = 0;     // Kendini yenileme zamanı
+
+// Mesafe bazlı emir takibi - HER SEVİYE İÇİN AYRI TAKİP
+bool buyLevelUsed[];              // Her mesafe seviyesinde BUY açıldı mı
+bool sellLevelUsed[];             // Her mesafe seviyesinde SELL açıldı mı
+int maxTrackedLevels = 100;       // Takip edilecek max seviye sayısı
 
 bool tradingBlocked = false;
 datetime dayStartTime = 0;
@@ -89,15 +124,51 @@ datetime lastRiskCheckTime = 0;
 struct SRLevel { double price; bool isSupport; };  // isSupport: true=destek, false=direnç
 SRLevel srLevels[];
 
+// RSI ve MACD değerleri
+double currentRSI = 0.0;
+double currentMACD = 0.0;
+double currentMACDSignal = 0.0;
+
+// MOTT (Multiple OTT) Değerleri
+double MOTT_Top = 0.0;           // Üst çizgi (Cyan) - Highest OTT
+double MOTT_Bottom = 0.0;        // Alt çizgi (Purple) - Lowest OTT  
+double MOTT_Middle = 0.0;        // Orta çizgi (Green) - (Top+Bottom)/2
+double MOTT_UpperMid = 0.0;      // Üst-Orta (Top+Middle)/2
+double MOTT_LowerMid = 0.0;      // Alt-Orta (Bottom+Middle)/2
+int MOTT_Trend = 0;              // Trend yönü: 1=Uptrend, -1=Downtrend, 0=Nötr
+double MOTT_PrevMiddle = 0.0;    // Önceki Middle değeri (trend tespiti için)
+
+// 15 DAKİKALIK TREND FİLTRESİ (HTF = Higher Time Frame)
+double MOTT_M15_Middle = 0.0;    // 15dk MOTT orta çizgisi
+int MOTT_M15_Trend = 0;          // 15dk MOTT trend: 1=Up, -1=Down
+int TLM_M15_Trend = 0;           // 15dk TLM trend: 1=Up, -1=Down
+int HTF_Trend = 0;               // KOMBİNE TREND: 1=UP, -1=DOWN, 0=Karışık
+
+// TLM (Trend Line Methods) Değerleri
+// Method 1: Pivot Span Trendline
+double TLM_PivotHighLine = 0.0;  // Pivot High trend çizgisi değeri
+double TLM_PivotLowLine = 0.0;   // Pivot Low trend çizgisi değeri
+double TLM_PivotSlope = 0.0;     // Pivot trend eğimi
+int TLM_PivotTrend = 0;          // Pivot trend yönü: 1=Up, -1=Down
+// Method 2: 5-Point Channel
+double TLM_ChannelHigh = 0.0;    // 5-Point kanal üst çizgisi
+double TLM_ChannelLow = 0.0;     // 5-Point kanal alt çizgisi
+double TLM_ChannelSlope = 0.0;   // Kanal eğimi
+int TLM_ChannelTrend = 0;        // Kanal trend yönü: 1=Up, -1=Down
+// Kombinasyon
+int TLM_CombinedTrend = 0;       // Her iki method'un kombinasyonu: 1=Up, -1=Down, 0=Karışık
+
+
 //+------------------------------------------------------------------+
 //| FONKSİYON PROTOTİPLERİ                                           |
 //+------------------------------------------------------------------+
 void ManagePositions();
 void ManageGridSystem();
-void GenerateGridLevels(double basePrice, bool isBuy);
+void GenerateGridDistances();                 // Mesafe tabanlı grid seviyeleri
 void ScanForSR();
 double FindNearestSR(double price);
-void PlacePendingOrders(bool isBuy);
+void CalculateCustomTrend();                  // Kullanıcı trend indikatörü
+void CheckAndOpenByDistance(bool isBuy);      // Mesafe bazlı market emri
 int CountPositions(ENUM_POSITION_TYPE type);
 int CountOrders(ENUM_ORDER_TYPE type);
 void DeletePendingOrders();
@@ -116,12 +187,24 @@ void CheckNoiseZoneClose();                  // Gürültü bandına girince kâr
 void CloseAllPositions();                    // Tüm pozisyonları kapat (bu EA)
 void CloseHalfPositions();                   // Pozisyonların yarısını kapat
 void UpdateRiskState();
+void ManagePendingOrders();                  // Pending order yönetimi
+void PlacePendingOrdersForLevel(int level, bool isBuy, double price, double lot, double tp);
+void DeleteAllPendingOrders();               // Tüm pending emirleri sil
 bool IsTradingAllowed();
 double GetEATotalLots();
 double GetEATotalProfit();
 int GetEAPositionCount();
 void CheckBasketExit();
 void TryOpenReverseTrade();
+// RSI ve MACD fonksiyonları
+double CalculateRSI();
+void CalculateMACD();
+bool IsRSIBuySignal();
+bool IsRSISellSignal();
+bool IsMACDBullish();
+bool IsMACDBearish();
+void CalculateHTFTrend();                    // 15dk trend hesapla
+// double GetPipSize();                          // Pip büyüklüğü (ALREADY DEFINED ELSEWHERE or AT BOTTOM)
 
 //+------------------------------------------------------------------+
 //| INIT                                                             |
@@ -131,13 +214,16 @@ int OnInit()
     pointValue = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
     if(pointValue <= 0) return INIT_FAILED;
 
-    ArrayResize(gridPrices, MaxGridOrders + 5);
+    ArrayResize(gridDistances, MaxGridOrders + 5);
 
     Print(">>> Grid_Bot UNIFIED FIXED - MavilimW (3,5,8,13,21,34) <<<");
 
     dayStartTime = TimeCurrent();
     dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
     peakEquity = dayStartEquity;
+    
+    EventSetTimer(1); // Risk kontrolü için timer
+    
     return INIT_SUCCEEDED;
 }
 
@@ -147,6 +233,20 @@ int OnInit()
 void OnDeinit(const int reason)
 {
     RemoveMavilimLine();
+    RemoveMOTTLines();
+    RemoveTLMLines();
+    ObjectDelete(0, REVERSE_LABEL);
+    EventKillTimer();
+}
+
+//+------------------------------------------------------------------+
+//| ON TIMER                                                         |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+    // Periyodik risk ve çıkış kontrolü (Tick gelmese bile çalışır)
+    UpdateRiskState();
+    CheckBasketExit();
 }
 
 //+------------------------------------------------------------------+
@@ -165,14 +265,47 @@ double CalculateATR()
 
 void OnTick()
 {
+    // Mavilim hesapla ve trend belirle
+    prevMavilimW = currentMavilimW;
     currentMavilimW = CalculateMavilimMQL5();
     currentATR = CalculateATR();
+    
+    // Mavilim trend rengi: Mavi=yukarı, Kırmızı=aşağı, Sarı=nötr
+    if(currentMavilimW > prevMavilimW && prevMavilimW > 0)
+        mavilimTrend = 1;   // Yukarı (Mavi)
+    else if(currentMavilimW < prevMavilimW && prevMavilimW > 0)
+        mavilimTrend = -1;  // Aşağı (Kırmızı)
+    else
+        mavilimTrend = 0;   // Nötr (Sarı)
+    
+    // MOTT hesapla (3dk)
+    CalculateMOTT();
+    
+    // TLM (Trend Line Methods) hesapla (3dk)
+    CalculateTLM();
+    
+    // 15 DAKİKALIK TREND HESAPLA
+    CalculateHTFTrend();
+    
+    // RSI ve MACD hesapla
+    currentRSI = CalculateRSI();
+    CalculateMACD();
 
-    if(ShowMavilimOnChart && currentMavilimW > 0)
+    // Mavilim çizgisini göster (3dk grafikte)
+    if(currentMavilimW > 0)
         DrawMavilimLine();
+    
+    // MOTT çizgilerini göster
+    if(ShowMOTTOnChart && MOTT_Middle > 0)
+        DrawMOTTLines();
+    
+    // TLM çizgilerini göster
+    if(UsePivotSpanTrend || Use5PointChannel)
+        DrawTLMLines();
 
-    if(CloseInNoiseZone && currentMavilimW > 0)
-        CheckNoiseZoneClose();
+
+    // Gürültü bandında pozisyon kapatma mantığı (Opsiyonel, şimdilik pasif)
+    // CheckNoiseZoneClose();
 
     UpdateRiskState();
     CheckBasketExit();
@@ -180,19 +313,20 @@ void OnTick()
 
     ManagePositions();
 
-    if(currentMavilimW == 0) return;
+    // Hem MOTT hem Mavilim gerekli
+    if(currentMavilimW == 0 || MOTT_Middle == 0) return;
 
-    // Periyodik kendini yenile: kararları sorgula, gürültü bandını kontrol et
+    // Periyodik kendini yenile: kararları sorgula
     if(RecheckSeconds > 0 && TimeCurrent() - lastRecheckTime >= RecheckSeconds)
     {
         lastRecheckTime = TimeCurrent();
-        double dist = MathAbs(SymbolInfoDouble(_Symbol, SYMBOL_BID) - currentMavilimW);
-        double noiseBand = currentATR * BandMultiplier;
-        if(dist < noiseBand)
-            DeletePendingOrders();   // Gürültü bandındaysak bekleyen emirleri iptal et
+        // Gereksiz bekleyen emirleri temizle
+        DeletePendingOrders();
     }
 
+    
     ManageGridSystem();
+    ManagePendingOrders();
 }
 
 void UpdateRiskState()
@@ -231,6 +365,7 @@ void UpdateRiskState()
     if(MaxTotalLots > 0 && GetEATotalLots() > MaxTotalLots)
         riskBreach = true;
 
+    // Zarar limitleri devre dışı (0 olduğunda çalışmaz)
     if(MaxDailyLossPercent > 0 && dayStartEquity > 0)
     {
         double dailyLossPct = (dayStartEquity - equity) * 100.0 / dayStartEquity;
@@ -247,12 +382,10 @@ void UpdateRiskState()
 
     if(riskBreach)
     {
+        // SADECE YENİ EMİR AÇMAYI ENGELLE - POZİSYON KAPATMA YOK
         tradingBlocked = true;
-        if(EmergencyCloseOnRisk)
-        {
-            DeletePendingOrders();
-            CloseAllPositions();
-        }
+        // EmergencyCloseOnRisk KALDIRILDI - Asla zararda kapatma
+        Print(">>> Risk limiti: Yeni emir açma durduruldu (pozisyonlar açık kalacak)");
     }
 }
 
@@ -305,47 +438,74 @@ double GetEATotalProfit()
 void CheckBasketExit()
 {
     if(!UseBasketExit) return;
-    if(!EnableRiskManagement) return;
-    if(BasketTakeProfitMoney <= 0.0 && BasketStopLossMoney <= 0.0) return;
+    // Risk yönetimi kapalı olsa bile basket TP çalışsın
+    if(BasketTakeProfitMoney <= 0.0) return;
 
     double totalProfit = GetEATotalProfit();
 
+    // SADECE KARLI ÇIKIŞ - Basket TP
     if(BasketTakeProfitMoney > 0.0 && totalProfit >= BasketTakeProfitMoney)
     {
+        Print(">>> BASKET TP: Toplam kar = ", totalProfit, " hedef = ", BasketTakeProfitMoney);
         DeletePendingOrders();
         CloseAllPositions();
         return;
     }
-
-    if(BasketStopLossMoney > 0.0 && totalProfit <= -MathAbs(BasketStopLossMoney))
-    {
-        DeletePendingOrders();
-        CloseAllPositions();
-        tradingBlocked = true;
-        return;
-    }
+    
+    // STOP LOSS YOK - Asla zararda kapatma
 }
 
 void TryOpenReverseTrade()
 {
     if(!EnableReverseTrade) return;
     if(!IsTradingAllowed()) return;
-    if(currentMavilimW <= 0) return;
+    if(MOTT_Middle <= 0) return;
 
     double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double price = bid;
 
-    // Fiyat bandın dışında olmalı - ölü alanda işlem açma
-    double bandDist = currentATR * BandMultiplier;
-    double dist = MathAbs(bid - currentMavilimW);
-    if(dist < bandDist) return;
-
-    bool goingBuy = (bid < currentMavilimW);
-
+    // MOTT çizgilerine yakınlık hesapla (pip cinsinden)
+    // BUY için: MOTT_Bottom'a yakınlık
+    // SELL için: MOTT_Top'a yakınlık
+    bool goingBuy = (bid < MOTT_Middle);
+    
+    double targetLine = goingBuy ? MOTT_Bottom : MOTT_Top;
+    double distToLinePip = MathAbs(price - targetLine) / pointValue / 10.0;
+    
+    // Çizgiye çok uzaksa ters işlem açma
+    if(distToLinePip > ReverseZone3Pip) return;
+    
     ENUM_POSITION_TYPE targetType = goingBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+    
+    // Yakınlığa göre lot çarpanı belirle
+    // Çizgiye ne kadar yakınsa o kadar büyük lot
+    double lotMultiplier = ReverseLotMult1;  // Varsayılan (en uzak)
+    string zoneName = "Zone1";
+    
+    if(distToLinePip <= ReverseZone1Pip)
+    {
+        // En yakın bölge - en büyük lot
+        lotMultiplier = ReverseLotMult3;
+        zoneName = "Zone3 (EN YAKIN)";
+    }
+    else if(distToLinePip <= ReverseZone2Pip)
+    {
+        // Orta bölge
+        lotMultiplier = ReverseLotMult2;
+        zoneName = "Zone2";
+    }
+    else
+    {
+        // Uzak bölge - küçük lot
+        lotMultiplier = ReverseLotMult1;
+        zoneName = "Zone1 (UZAK)";
+    }
+    
+    // Bu bölgede zaten pozisyon var mı kontrol et
     if(CountPositions(targetType) > 0) return;
-
-    double lot = NormalizeLot(MathMin(ReverseLotSize, ReverseMaxLot));
+    
+    double lot = NormalizeLot(MathMin(ReverseLotSize * lotMultiplier, ReverseMaxLot));
     if(lot <= 0.0) return;
 
     MqlTradeRequest req = {};
@@ -375,7 +535,36 @@ void TryOpenReverseTrade()
     if(!OrderSend(req, res))
         Print("Ters işlem hatası: ", res.retcode);
     else
-        Print(">>> Ters işlem açıldı: ", goingBuy ? "BUY" : "SELL", " lot=", lot);
+    {
+        Print(">>> TERS İŞLEM: ", goingBuy ? "BUY" : "SELL", " lot=", lot, 
+              " | ", zoneName, " | Mesafe=", DoubleToString(distToLinePip, 1), " pip",
+              " | Hedef=", goingBuy ? "MOTT_Bottom" : "MOTT_Top");
+        // Grafikte ters işlem bilgisi göster
+        ShowReverseTradeLabel(goingBuy, lot);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| TERS İŞLEM ETİKETİ - Grafikte göster                              |
+//+------------------------------------------------------------------+
+void ShowReverseTradeLabel(bool isBuy, double lot)
+{
+    string text = "TERS İŞLEM: " + (isBuy ? "BUY" : "SELL") + " " + DoubleToString(lot, 2) + " lot";
+    
+    if(ObjectFind(0, REVERSE_LABEL) < 0)
+    {
+        ObjectCreate(0, REVERSE_LABEL, OBJ_LABEL, 0, 0, 0);
+        ObjectSetInteger(0, REVERSE_LABEL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+        ObjectSetInteger(0, REVERSE_LABEL, OBJPROP_XDISTANCE, 10);
+        ObjectSetInteger(0, REVERSE_LABEL, OBJPROP_YDISTANCE, 50);
+        ObjectSetInteger(0, REVERSE_LABEL, OBJPROP_FONTSIZE, 12);
+        ObjectSetInteger(0, REVERSE_LABEL, OBJPROP_COLOR, isBuy ? clrLime : clrRed);
+        ObjectSetInteger(0, REVERSE_LABEL, OBJPROP_BACK, false);
+    }
+    
+    ObjectSetString(0, REVERSE_LABEL, OBJPROP_TEXT, text);
+    ObjectSetInteger(0, REVERSE_LABEL, OBJPROP_COLOR, isBuy ? clrLime : clrRed);
+    ChartRedraw(0);
 }
 
 //+------------------------------------------------------------------+
@@ -423,8 +612,684 @@ double CalculateMavilimMQL5()
 }
 
 //+------------------------------------------------------------------+
-//| LOT NORMALİZASYONU                                               |
+//| VIDYA - Variable Index Dynamic Average                           |
+//| Pine Script: ta.cmo() + custom VIDYA calculation                 |
 //+------------------------------------------------------------------+
+double CalculateVIDYA(const double &source[], int len, int idx)
+{
+    if(len <= 0 || idx < 0) return source[idx];
+    
+    // CMO (Chande Momentum Oscillator) hesapla
+    double sumUp = 0, sumDown = 0;
+    for(int i = idx; i < idx + len && i < ArraySize(source) - 1; i++)
+    {
+        double diff = source[i] - source[i + 1];
+        if(diff > 0) sumUp += diff;
+        else sumDown += MathAbs(diff);
+    }
+    
+    double cmo = 0;
+    if(sumUp + sumDown > 0)
+        cmo = (sumUp - sumDown) / (sumUp + sumDown);
+    
+    // VIDYA = alpha * source + (1-alpha) * prevVIDYA
+    // alpha = 2 / (len + 1) * |CMO|
+    double alpha = (2.0 / (len + 1)) * MathAbs(cmo);
+    
+    // İlk değer için source kullan
+    static double prevVIDYA = 0;
+    if(prevVIDYA == 0) prevVIDYA = source[idx];
+    
+    double vidya = alpha * source[idx] + (1 - alpha) * prevVIDYA;
+    prevVIDYA = vidya;
+    
+    return vidya;
+}
+
+//+------------------------------------------------------------------+
+//| OTT (Optimized Trend Tracker) Hesaplama                          |
+//| Anıl Özekşi formülü: OTT = MAvg + (MAvg * percent / 100)          |
+//+------------------------------------------------------------------+
+double CalculateOTT(double mavg, double percent)
+{
+    static double longStop = 0, shortStop = 0;
+    static double prevLongStop = 0, prevShortStop = 0;
+    static int dir = 1;
+    static double prevMT = 0;
+    
+    double fark = mavg * percent * 0.01;
+    
+    // Long Stop
+    double newLongStop = mavg - fark;
+    if(mavg > prevLongStop)
+        longStop = MathMax(newLongStop, prevLongStop);
+    else
+        longStop = newLongStop;
+    
+    // Short Stop  
+    double newShortStop = mavg + fark;
+    if(mavg < prevShortStop)
+        shortStop = MathMin(newShortStop, prevShortStop);
+    else
+        shortStop = newShortStop;
+    
+    // Direction
+    if(mavg > prevShortStop)
+        dir = 1;
+    else if(mavg < prevLongStop)
+        dir = -1;
+    
+    // MT (Middle Trend)
+    double MT = (dir == 1) ? longStop : shortStop;
+    
+    // OTT
+    double OTT = (prevMT > MT) ? MT - fark : MT + fark;
+    
+    // Prev değerleri güncelle
+    prevLongStop = longStop;
+    prevShortStop = shortStop;
+    prevMT = MT;
+    
+    return OTT;
+}
+
+//+------------------------------------------------------------------+
+//| MOTT (Multiple OTT) Hesaplama - 5 Çizgi                          |
+//| Top: Highest OTT, Bottom: Lowest OTT, Middle: Ortalama           |
+//+------------------------------------------------------------------+
+void CalculateMOTT()
+{
+    int period = MOTT_HighLowPeriod;
+    int barsNeeded = period + 50;
+    
+    double high[], low[], close[];
+    ArraySetAsSeries(high, true);
+    ArraySetAsSeries(low, true);
+    ArraySetAsSeries(close, true);
+    
+    if(CopyHigh(_Symbol, PERIOD_M3, 0, barsNeeded, high) < barsNeeded) return;
+    if(CopyLow(_Symbol, PERIOD_M3, 0, barsNeeded, low) < barsNeeded) return;
+    if(CopyClose(_Symbol, PERIOD_M3, 0, barsNeeded, close) < barsNeeded) return;
+    
+    // En yüksek ve en düşük değerleri bul
+    double highestHigh = high[0];
+    double lowestLow = low[0];
+    for(int i = 0; i < period && i < barsNeeded; i++)
+    {
+        if(high[i] > highestHigh) highestHigh = high[i];
+        if(low[i] < lowestLow) lowestLow = low[i];
+    }
+    
+    // VIDYA hesapla (Highest ve Lowest için)
+    // Basitleştirilmiş: WMA kullan (VIDYA yerine, daha stabil)
+    double highVIDYA = 0, lowVIDYA = 0;
+    double weightSum = 0;
+    for(int i = 0; i < MOTT_Length && i < barsNeeded; i++)
+    {
+        double w = (double)(MOTT_Length - i);
+        highVIDYA += w * high[i];
+        lowVIDYA += w * low[i];
+        weightSum += w;
+    }
+    if(weightSum > 0)
+    {
+        highVIDYA /= weightSum;
+        lowVIDYA /= weightSum;
+    }
+    
+    // Highest ve Lowest değerlerini VIDYA ile birleştir
+    double highSource = (highestHigh + highVIDYA) / 2.0;
+    double lowSource = (lowestLow + lowVIDYA) / 2.0;
+    
+    // OTT hesapla
+    static double prevTopOTT = 0, prevBottomOTT = 0;
+    static double topLongStop = 0, topShortStop = 0;
+    static double botLongStop = 0, botShortStop = 0;
+    static int topDir = 1, botDir = 1;
+    
+    double percent = MOTT_OTTPercent;
+    
+    // Top OTT (Highest bazlı)
+    double topFark = highSource * percent * 0.01;
+    double newTopLongStop = highSource - topFark;
+    double newTopShortStop = highSource + topFark;
+    
+    if(highSource > topLongStop)
+        topLongStop = MathMax(newTopLongStop, topLongStop);
+    else
+        topLongStop = newTopLongStop;
+        
+    if(highSource < topShortStop)
+        topShortStop = MathMin(newTopShortStop, topShortStop);
+    else
+        topShortStop = newTopShortStop;
+        
+    if(highSource > topShortStop) topDir = 1;
+    else if(highSource < topLongStop) topDir = -1;
+    
+    double topMT = (topDir == 1) ? topLongStop : topShortStop;
+    MOTT_Top = (prevTopOTT > topMT) ? topMT - topFark : topMT + topFark;
+    prevTopOTT = topMT;
+    
+    // Bottom OTT (Lowest bazlı)
+    double botFark = lowSource * percent * 0.01;
+    double newBotLongStop = lowSource - botFark;
+    double newBotShortStop = lowSource + botFark;
+    
+    if(lowSource > botLongStop)
+        botLongStop = MathMax(newBotLongStop, botLongStop);
+    else
+        botLongStop = newBotLongStop;
+        
+    if(lowSource < botShortStop)
+        botShortStop = MathMin(newBotShortStop, botShortStop);
+    else
+        botShortStop = newBotShortStop;
+        
+    if(lowSource > botShortStop) botDir = 1;
+    else if(lowSource < botLongStop) botDir = -1;
+    
+    double botMT = (botDir == 1) ? botLongStop : botShortStop;
+    MOTT_Bottom = (prevBottomOTT > botMT) ? botMT - botFark : botMT + botFark;
+    prevBottomOTT = botMT;
+    
+    // Orta çizgiler
+    MOTT_Middle = (MOTT_Top + MOTT_Bottom) / 2.0;
+    MOTT_UpperMid = (MOTT_Top + MOTT_Middle) / 2.0;
+    MOTT_LowerMid = (MOTT_Bottom + MOTT_Middle) / 2.0;
+    
+    // currentMavilimW'yi MOTT_Middle ile değiştir (eski kod uyumluluğu için)
+    currentMavilimW = MOTT_Middle;
+}
+
+//+------------------------------------------------------------------+
+//| MOTT Çizgilerini Grafikte Göster                                 |
+//+------------------------------------------------------------------+
+#define MOTT_TOP_LINE "MOTT_Top"
+#define MOTT_BOTTOM_LINE "MOTT_Bottom"
+#define MOTT_MIDDLE_LINE "MOTT_Middle"
+#define MOTT_UPPERMID_LINE "MOTT_UpperMid"
+#define MOTT_LOWERMID_LINE "MOTT_LowerMid"
+
+void DrawMOTTLines()
+{
+    if(!ShowMOTTOnChart) return;
+    if(MOTT_Middle <= 0) return;
+    
+    // Top (Cyan)
+    DrawBandLine(MOTT_TOP_LINE, MOTT_Top, clrCyan, STYLE_SOLID, 2);
+    // Bottom (Purple)
+    DrawBandLine(MOTT_BOTTOM_LINE, MOTT_Bottom, clrMagenta, STYLE_SOLID, 2);
+    // Middle (Green - dotted)
+    DrawBandLine(MOTT_MIDDLE_LINE, MOTT_Middle, clrLime, STYLE_DOT, 2);
+    // Upper Mid (Cyan - dotted)
+    DrawBandLine(MOTT_UPPERMID_LINE, MOTT_UpperMid, clrCyan, STYLE_DOT, 1);
+    // Lower Mid (Purple - dotted)
+    DrawBandLine(MOTT_LOWERMID_LINE, MOTT_LowerMid, clrMagenta, STYLE_DOT, 1);
+    
+    // MOTT Bilgi Etiketi
+    ShowMOTTInfoLabel();
+    
+    ChartRedraw(0);
+}
+
+void ShowMOTTInfoLabel()
+{
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    
+    // Trend yönü
+    string trendText = "NÖTR";
+    color trendColor = clrYellow;
+    if(MOTT_Trend == 1)
+    {
+        trendText = "YUKARI";
+        trendColor = clrLime;
+    }
+    else if(MOTT_Trend == -1)
+    {
+        trendText = "AŞAĞI";
+        trendColor = clrRed;
+    }
+    
+    // Fiyatın konumu
+    string posText = "";
+    if(bid > MOTT_Top)
+        posText = "TOP üstünde";
+    else if(bid > MOTT_UpperMid)
+        posText = "UpperMid-Top arası";
+    else if(bid > MOTT_Middle)
+        posText = "Middle-UpperMid arası";
+    else if(bid > MOTT_LowerMid)
+        posText = "LowerMid-Middle arası";
+    else if(bid > MOTT_Bottom)
+        posText = "Bottom-LowerMid arası";
+    else
+        posText = "BOTTOM altında";
+    
+    // Çizgilere mesafe (pip)
+    double distToTop = MathAbs(bid - MOTT_Top) / pointValue / 10.0;
+    double distToMid = MathAbs(bid - MOTT_Middle) / pointValue / 10.0;
+    double distToBot = MathAbs(bid - MOTT_Bottom) / pointValue / 10.0;
+    
+    string info = "═══ MOTT TREND ═══\n" +
+                  "Trend: " + trendText + "\n" +
+                  "Konum: " + posText + "\n" +
+                  "───────────────\n" +
+                  "Top: " + DoubleToString(MOTT_Top, _Digits) + " (" + DoubleToString(distToTop, 1) + " pip)\n" +
+                  "Middle: " + DoubleToString(MOTT_Middle, _Digits) + " (" + DoubleToString(distToMid, 1) + " pip)\n" +
+                  "Bottom: " + DoubleToString(MOTT_Bottom, _Digits) + " (" + DoubleToString(distToBot, 1) + " pip)";
+    
+    if(ObjectFind(0, MOTT_INFO_LABEL) < 0)
+    {
+        ObjectCreate(0, MOTT_INFO_LABEL, OBJ_LABEL, 0, 0, 0);
+        ObjectSetInteger(0, MOTT_INFO_LABEL, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+        ObjectSetInteger(0, MOTT_INFO_LABEL, OBJPROP_XDISTANCE, 10);
+        ObjectSetInteger(0, MOTT_INFO_LABEL, OBJPROP_YDISTANCE, 20);
+        ObjectSetInteger(0, MOTT_INFO_LABEL, OBJPROP_FONTSIZE, 10);
+        ObjectSetString(0, MOTT_INFO_LABEL, OBJPROP_FONT, "Consolas");
+        ObjectSetInteger(0, MOTT_INFO_LABEL, OBJPROP_BACK, false);
+    }
+    
+    ObjectSetString(0, MOTT_INFO_LABEL, OBJPROP_TEXT, info);
+    ObjectSetInteger(0, MOTT_INFO_LABEL, OBJPROP_COLOR, trendColor);
+}
+
+void RemoveMOTTLines()
+{
+    ObjectDelete(0, MOTT_TOP_LINE);
+    ObjectDelete(0, MOTT_BOTTOM_LINE);
+    ObjectDelete(0, MOTT_MIDDLE_LINE);
+    ObjectDelete(0, MOTT_UPPERMID_LINE);
+    ObjectDelete(0, MOTT_LOWERMID_LINE);
+    ObjectDelete(0, MOTT_INFO_LABEL);
+    ChartRedraw(0);
+}
+
+//+------------------------------------------------------------------+
+//| TLM (TREND LINE METHODS) HESAPLAMA                                |
+//+------------------------------------------------------------------+
+
+// Pivot High bulma
+double FindPivotHigh(int leftBars, int rightBars, int shift)
+{
+    double high[];
+    ArraySetAsSeries(high, true);
+    if(CopyHigh(_Symbol, PERIOD_M3, shift, leftBars + rightBars + 1, high) < leftBars + rightBars + 1)
+        return 0;
+    
+    double pivotHigh = high[rightBars];
+    for(int i = 0; i <= leftBars + rightBars; i++)
+    {
+        if(i == rightBars) continue;
+        if(high[i] >= pivotHigh) return 0;  // Pivot değil
+    }
+    return pivotHigh;
+}
+
+// Pivot Low bulma
+double FindPivotLow(int leftBars, int rightBars, int shift)
+{
+    double low[];
+    ArraySetAsSeries(low, true);
+    if(CopyLow(_Symbol, PERIOD_M3, shift, leftBars + rightBars + 1, low) < leftBars + rightBars + 1)
+        return 0;
+    
+    double pivotLow = low[rightBars];
+    for(int i = 0; i <= leftBars + rightBars; i++)
+    {
+        if(i == rightBars) continue;
+        if(low[i] <= pivotLow) return 0;  // Pivot değil
+    }
+    return pivotLow;
+}
+
+// Method 1: Pivot Span Trendline hesapla
+void CalculatePivotSpanTrend()
+{
+    if(!UsePivotSpanTrend) return;
+    
+    // Pivot High ve Low noktalarını bul
+    double pivotHighs[];
+    double pivotLows[];
+    int pivotHighBars[];
+    int pivotLowBars[];
+    
+    ArrayResize(pivotHighs, 0);
+    ArrayResize(pivotLows, 0);
+    ArrayResize(pivotHighBars, 0);
+    ArrayResize(pivotLowBars, 0);
+    
+    // Geriye bakarak pivot noktalarını topla
+    for(int i = TLM_PivotRight; i < TLM_LookbackLength && ArraySize(pivotHighs) < TLM_PivotCount; i++)
+    {
+        double ph = FindPivotHigh(TLM_PivotLeft, TLM_PivotRight, i);
+        if(ph > 0)
+        {
+            int size = ArraySize(pivotHighs);
+            ArrayResize(pivotHighs, size + 1);
+            ArrayResize(pivotHighBars, size + 1);
+            pivotHighs[size] = ph;
+            pivotHighBars[size] = i;
+        }
+    }
+    
+    for(int i = TLM_PivotRight; i < TLM_LookbackLength && ArraySize(pivotLows) < TLM_PivotCount; i++)
+    {
+        double pl = FindPivotLow(TLM_PivotLeft, TLM_PivotRight, i);
+        if(pl > 0)
+        {
+            int size = ArraySize(pivotLows);
+            ArrayResize(pivotLows, size + 1);
+            ArrayResize(pivotLowBars, size + 1);
+            pivotLows[size] = pl;
+            pivotLowBars[size] = i;
+        }
+    }
+    
+    // En az 2 pivot gerekli
+    if(ArraySize(pivotHighs) >= 2)
+    {
+        // En eski ve en yeni pivot high'dan çizgi çek
+        double slope = (pivotHighs[0] - pivotHighs[ArraySize(pivotHighs)-1]) / 
+                       (pivotHighBars[ArraySize(pivotHighs)-1] - pivotHighBars[0]);
+        TLM_PivotHighLine = pivotHighs[0] + slope * pivotHighBars[0];  // Mevcut bara uzat
+        TLM_PivotSlope = slope;
+    }
+    
+    if(ArraySize(pivotLows) >= 2)
+    {
+        double slope = (pivotLows[0] - pivotLows[ArraySize(pivotLows)-1]) / 
+                       (pivotLowBars[ArraySize(pivotLows)-1] - pivotLowBars[0]);
+        TLM_PivotLowLine = pivotLows[0] + slope * pivotLowBars[0];
+        if(TLM_PivotSlope == 0) TLM_PivotSlope = slope;
+        else TLM_PivotSlope = (TLM_PivotSlope + slope) / 2.0;
+    }
+    
+    // Trend yönü
+    if(TLM_PivotSlope > 0.00001)
+        TLM_PivotTrend = 1;   // Uptrend
+    else if(TLM_PivotSlope < -0.00001)
+        TLM_PivotTrend = -1;  // Downtrend
+    else
+        TLM_PivotTrend = 0;   // Nötr
+}
+
+// Method 2: 5-Point Straight Channel hesapla
+void Calculate5PointChannel()
+{
+    if(!Use5PointChannel) return;
+    
+    double high[], low[];
+    ArraySetAsSeries(high, true);
+    ArraySetAsSeries(low, true);
+    
+    if(CopyHigh(_Symbol, PERIOD_M3, 0, TLM_ChannelLength, high) < TLM_ChannelLength) return;
+    if(CopyLow(_Symbol, PERIOD_M3, 0, TLM_ChannelLength, low) < TLM_ChannelLength) return;
+    
+    // 5 segment'e böl
+    int segmentLen = TLM_ChannelLength / 5;
+    double segHighs[5], segLows[5];
+    int segMidBars[5];
+    
+    for(int s = 0; s < 5; s++)
+    {
+        int startBar = s * segmentLen;
+        int endBar = (s == 4) ? TLM_ChannelLength - 1 : (s + 1) * segmentLen - 1;
+        
+        // Segment'in ortası
+        segMidBars[s] = (startBar + endBar) / 2;
+        
+        // En yüksek high ve en düşük low'u bul
+        double maxHigh = high[startBar];
+        double minLow = low[startBar];
+        
+        for(int i = startBar; i <= endBar && i < TLM_ChannelLength; i++)
+        {
+            if(high[i] > maxHigh) maxHigh = high[i];
+            if(low[i] < minLow) minLow = low[i];
+        }
+        
+        segHighs[s] = maxHigh;
+        segLows[s] = minLow;
+    }
+    
+    // Linear regression: y = a + b*x
+    // High için
+    double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    for(int i = 0; i < 5; i++)
+    {
+        sumX += segMidBars[i];
+        sumY += segHighs[i];
+        sumXY += segMidBars[i] * segHighs[i];
+        sumX2 += segMidBars[i] * segMidBars[i];
+    }
+    
+    double n = 5.0;
+    double bHigh = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+    double aHigh = (sumY - bHigh * sumX) / n;
+    TLM_ChannelHigh = aHigh;  // x=0 noktasındaki değer (mevcut bar)
+    
+    // Low için
+    sumY = 0; sumXY = 0;
+    for(int i = 0; i < 5; i++)
+    {
+        sumY += segLows[i];
+        sumXY += segMidBars[i] * segLows[i];
+    }
+    
+    double bLow = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+    double aLow = (sumY - bLow * sumX) / n;
+    TLM_ChannelLow = aLow;
+    
+    // Ortalama eğim
+    TLM_ChannelSlope = (bHigh + bLow) / 2.0;
+    
+    // Trend yönü (negatif eğim = yukarı trend çünkü bar 0 en son)
+    if(TLM_ChannelSlope < -0.00001)
+        TLM_ChannelTrend = 1;   // Uptrend
+    else if(TLM_ChannelSlope > 0.00001)
+        TLM_ChannelTrend = -1;  // Downtrend
+    else
+        TLM_ChannelTrend = 0;   // Nötr
+}
+
+// TLM Ana hesaplama ve trend kombinasyonu
+void CalculateTLM()
+{
+    CalculatePivotSpanTrend();
+    Calculate5PointChannel();
+    
+    // Her iki method'u kombine et
+    if(TLM_PivotTrend == TLM_ChannelTrend && TLM_PivotTrend != 0)
+        TLM_CombinedTrend = TLM_PivotTrend;  // Her iki method aynı yönde
+    else if(TLM_PivotTrend != 0 && TLM_ChannelTrend == 0)
+        TLM_CombinedTrend = TLM_PivotTrend;  // Sadece Pivot aktif
+    else if(TLM_ChannelTrend != 0 && TLM_PivotTrend == 0)
+        TLM_CombinedTrend = TLM_ChannelTrend; // Sadece Channel aktif
+    else
+        TLM_CombinedTrend = 0;  // Karışık/belirsiz
+    
+    // MOTT trend'ini de TLM ile güncelle
+    if(TLM_CombinedTrend != 0)
+        MOTT_Trend = TLM_CombinedTrend;
+}
+
+// TLM çizgilerini çiz
+#define TLM_PIVOT_HIGH "TLM_PivotHigh"
+#define TLM_PIVOT_LOW "TLM_PivotLow"
+#define TLM_CHANNEL_HIGH "TLM_ChannelHigh"
+#define TLM_CHANNEL_LOW "TLM_ChannelLow"
+
+void DrawTLMLines()
+{
+    if(UsePivotSpanTrend && TLM_PivotHighLine > 0)
+    {
+        DrawBandLine(TLM_PIVOT_HIGH, TLM_PivotHighLine, TLM_HighLineColor, STYLE_SOLID, 2);
+        DrawBandLine(TLM_PIVOT_LOW, TLM_PivotLowLine, TLM_LowLineColor, STYLE_SOLID, 2);
+    }
+    
+    if(Use5PointChannel && TLM_ChannelHigh > 0)
+    {
+        DrawBandLine(TLM_CHANNEL_HIGH, TLM_ChannelHigh, TLM_ChannelHighColor, STYLE_DASH, 1);
+        DrawBandLine(TLM_CHANNEL_LOW, TLM_ChannelLow, TLM_ChannelLowColor, STYLE_DASH, 1);
+    }
+    
+    // TLM Bilgi Etiketi
+    ShowTLMInfoLabel();
+    
+    ChartRedraw(0);
+}
+
+void ShowTLMInfoLabel()
+{
+    if(!UsePivotSpanTrend && !Use5PointChannel) return;
+    
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    
+    // Trend yönü
+    string trendText = "NÖTR";
+    color trendColor = clrYellow;
+    if(TLM_CombinedTrend == 1)
+    {
+        trendText = "YUKARI ↑";
+        trendColor = clrLime;
+    }
+    else if(TLM_CombinedTrend == -1)
+    {
+        trendText = "AŞAĞI ↓";
+        trendColor = clrRed;
+    }
+    
+    // Pivot Span bilgisi
+    string pivotInfo = "";
+    if(UsePivotSpanTrend && TLM_PivotHighLine > 0)
+    {
+        double distToHigh = MathAbs(bid - TLM_PivotHighLine) / pointValue / 10.0;
+        double distToLow = MathAbs(bid - TLM_PivotLowLine) / pointValue / 10.0;
+        pivotInfo = "Pivot High: " + DoubleToString(distToHigh, 1) + " pip\n" +
+                    "Pivot Low: " + DoubleToString(distToLow, 1) + " pip\n";
+    }
+    
+    // 5-Point Channel bilgisi
+    string channelInfo = "";
+    if(Use5PointChannel && TLM_ChannelHigh > 0)
+    {
+        double distToChanHigh = MathAbs(bid - TLM_ChannelHigh) / pointValue / 10.0;
+        double distToChanLow = MathAbs(bid - TLM_ChannelLow) / pointValue / 10.0;
+        channelInfo = "Channel High: " + DoubleToString(distToChanHigh, 1) + " pip\n" +
+                      "Channel Low: " + DoubleToString(distToChanLow, 1) + " pip";
+    }
+    
+    string info = "═══ TLM TREND ═══\n" +
+                  "Trend: " + trendText + "\n" +
+                  "───────────────\n" +
+                  pivotInfo + channelInfo;
+    
+    if(ObjectFind(0, TLM_INFO_LABEL) < 0)
+    {
+        ObjectCreate(0, TLM_INFO_LABEL, OBJ_LABEL, 0, 0, 0);
+        ObjectSetInteger(0, TLM_INFO_LABEL, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+        ObjectSetInteger(0, TLM_INFO_LABEL, OBJPROP_XDISTANCE, 10);
+        ObjectSetInteger(0, TLM_INFO_LABEL, OBJPROP_YDISTANCE, 180);
+        ObjectSetInteger(0, TLM_INFO_LABEL, OBJPROP_FONTSIZE, 10);
+        ObjectSetString(0, TLM_INFO_LABEL, OBJPROP_FONT, "Consolas");
+        ObjectSetInteger(0, TLM_INFO_LABEL, OBJPROP_BACK, false);
+    }
+    
+    ObjectSetString(0, TLM_INFO_LABEL, OBJPROP_TEXT, info);
+    ObjectSetInteger(0, TLM_INFO_LABEL, OBJPROP_COLOR, trendColor);
+}
+
+void RemoveTLMLines()
+{
+    ObjectDelete(0, TLM_PIVOT_HIGH);
+    ObjectDelete(0, TLM_PIVOT_LOW);
+    ObjectDelete(0, TLM_CHANNEL_HIGH);
+    ObjectDelete(0, TLM_CHANNEL_LOW);
+    ObjectDelete(0, TLM_INFO_LABEL);
+    ChartRedraw(0);
+}
+
+//+------------------------------------------------------------------+
+//| PIP BOYUTU                                                        |
+//+------------------------------------------------------------------+
+double GetPipSize()
+{
+    return (_Digits >= 4) ? pointValue * 10.0 : pointValue;
+}
+
+//+------------------------------------------------------------------+
+//| GÜRÜLTÜ BANDI HESAPLAMA                                           |
+//+------------------------------------------------------------------+
+double GetNoiseBandPoints()
+{
+    double xPip = MathAbs(MOTT_Top - MOTT_Bottom) / pointValue / 10.0;
+    if(xPip < 30) xPip = 50;
+    return (xPip * 0.3) * 10.0; // Point cinsinden 0.3X
+}
+
+//+------------------------------------------------------------------+
+//| TP FİYATI - MOTT_LowerMid ve MOTT_UpperMid kenarlarına            |
+//| BUY (alttan açılır): TP = MOTT_LowerMid (gürültü alanının alt kenarı)
+//| SELL (üstten açılır): TP = MOTT_UpperMid (gürültü alanının üst kenarı)
+//+------------------------------------------------------------------+
+double GetTPPrice(bool isBuy)
+{
+    if(MOTT_LowerMid <= 0 || MOTT_UpperMid <= 0) return 0;
+    
+    // TP gürültü alanının kenarında
+    if(isBuy)
+        return NormalizeDouble(MOTT_LowerMid, _Digits);   // BUY → TP = LowerMid
+    else
+        return NormalizeDouble(MOTT_UpperMid, _Digits);   // SELL → TP = UpperMid
+}
+
+//+------------------------------------------------------------------+
+//| GEÇERLİ TP - Minimum kar mesafesini kontrol et                    |
+//+------------------------------------------------------------------+
+double GetValidTPForPosition(bool isBuy, double openPrice)
+{
+    double tp = GetTPPrice(isBuy);
+    if(tp <= 0) return 0;
+    
+    double minDist = 10.0 * pointValue; // 10 pip sabit
+    
+    if(isBuy)
+    {
+        if(tp <= openPrice + minDist)
+            tp = NormalizeDouble(openPrice + minDist, _Digits);
+    }
+    else
+    {
+        if(tp >= openPrice - minDist)
+            tp = NormalizeDouble(openPrice - minDist, _Digits);
+    }
+    
+    return tp;
+}
+
+//+------------------------------------------------------------------+
+//| TRAILING TP - Fiyat Mavilim'e yaklaşırken TP'yi çek               |
+//+------------------------------------------------------------------+
+double GetTrailingTP(bool isBuy, double openPrice, double currentTP)
+{
+    return currentTP; // Trailing TP geçici olarak devre dışı
+}
+
+//+------------------------------------------------------------------+
+//| DİNAMİK BASE LOT - Bakiyeye göre hesapla                          |
+//+------------------------------------------------------------------+
+double GetDynamicBaseLot()
+{
+    if(!UseDynamicLot) return BaseLotSize;
+    
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    // Bakiyenin %1'i kadar lot (örn: 10000$ -> 0.10 lot)
+    double lot = (balance * 0.01) / 10000.0;
+    return NormalizeLot(MathMax(BaseLotSize, lot));
+}
+
+
 double NormalizeLot(double lot)
 {
     double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -436,8 +1301,119 @@ double NormalizeLot(double lot)
 }
 
 //+------------------------------------------------------------------+
-//| BROKER FILLING MODE                                              |
+//| GÜRÜLTÜ BANDINA GİRİNCE KÂRLI POZİSYONLARI KAPAT                  |
 //+------------------------------------------------------------------+
+void CheckNoiseZoneClose()
+{
+    // X = MOTT aralığı pip cinsinden
+    double xPip = MathAbs(MOTT_Top - MOTT_Bottom) / pointValue / 10.0;
+    if(xPip < 30) xPip = 50;
+    
+    double noiseBand = (xPip * 0.3) * pointValue * 10.0;
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double dist = MathAbs(bid - currentMavilimW);
+    
+    // Fiyat gürültü bandının içinde mi?
+    if(dist < noiseBand)
+    {
+        // Kârdaki pozisyonları kapat
+        for(int i = PositionsTotal() - 1; i >= 0; i--)
+        {
+            ulong ticket = PositionGetTicket(i);
+            if(!PositionSelectByTicket(ticket)) continue;
+            if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+            if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+            
+            double profit = PositionGetDouble(POSITION_PROFIT);
+            if(profit > 0)
+            {
+                MqlTradeRequest req = {};
+                MqlTradeResult res = {};
+                req.action = TRADE_ACTION_DEAL;
+                req.position = ticket;
+                req.symbol = _Symbol;
+                req.volume = PositionGetDouble(POSITION_VOLUME);
+                req.type = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+                req.price = (req.type == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+                req.type_filling = GetFillingMode();
+                req.magic = MagicNumber;
+                
+                if(OrderSend(req, res))
+                    Print(">>> Gürültü bandı: Kârlı pozisyon kapatıldı, ticket=", ticket, " kar=", profit);
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| TÜM POZİSYONLARI KAPAT                                           |
+//+------------------------------------------------------------------+
+void CloseAllPositions()
+{
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(!PositionSelectByTicket(ticket)) continue;
+        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+        
+        MqlTradeRequest req = {};
+        MqlTradeResult res = {};
+        req.action = TRADE_ACTION_DEAL;
+        req.position = ticket;
+        req.symbol = _Symbol;
+        req.volume = PositionGetDouble(POSITION_VOLUME);
+        req.type = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+        req.price = (req.type == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        req.type_filling = GetFillingMode();
+        req.magic = MagicNumber;
+        
+        if(!OrderSend(req, res))
+            Print("CloseAll hatası #", ticket, " retcode=", res.retcode);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| POZİSYONLARIN YARISINI KAPAT (Risk Yönetimi)                      |
+//+------------------------------------------------------------------+
+void CloseHalfPositions()
+{
+    int count = 0;
+    int total = 0;
+    
+    // Toplam pozisyon sayısı
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(!PositionSelectByTicket(ticket)) continue;
+        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+        total++;
+    }
+    
+    // Yarısını kapat
+    for(int i = PositionsTotal() - 1; i >= 0 && count < total / 2; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(!PositionSelectByTicket(ticket)) continue;
+        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+        
+        MqlTradeRequest req = {};
+        MqlTradeResult res = {};
+        req.action = TRADE_ACTION_DEAL;
+        req.position = ticket;
+        req.symbol = _Symbol;
+        req.volume = PositionGetDouble(POSITION_VOLUME);
+        req.type = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+        req.price = (req.type == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        req.type_filling = GetFillingMode();
+        req.magic = MagicNumber;
+        
+        if(OrderSend(req, res)) count++;
+    }
+}
+
 ENUM_ORDER_TYPE_FILLING GetFillingMode()
 {
     uint filling = (uint)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
@@ -474,13 +1450,67 @@ void DrawMavilimLine()
 {
     if(currentMavilimW <= 0) return;
 
-    double band = currentATR * BandMultiplier;
+    double band = currentATR * 0.3; // Varsayılan dar bant
+    
+    // Mavilim trend rengi: Mavi=yukarı, Kırmızı=aşağı, Sarı=nötr
+    color mavilimColor = clrYellow;
+    if(mavilimTrend == 1)
+        mavilimColor = clrDodgerBlue;  // Yukarı trend
+    else if(mavilimTrend == -1)
+        mavilimColor = clrRed;          // Aşağı trend
 
-    DrawBandLine(MAVILIM_OBJ_NAME, currentMavilimW, clrDodgerBlue, STYLE_SOLID, 2);
-    DrawBandLine(BAND_UP, currentMavilimW + band, clrOrange, STYLE_SOLID, 1);
-    DrawBandLine(BAND_DN, currentMavilimW - band, clrOrange, STYLE_SOLID, 1);
+    DrawBandLine(MAVILIM_OBJ_NAME, currentMavilimW, mavilimColor, STYLE_SOLID, 2);
+    ObjectSetInteger(0, MAVILIM_OBJ_NAME, OBJPROP_COLOR, mavilimColor);  // Rengi güncelle
+    
+    DrawBandLine(BAND_UP, currentMavilimW + band, clrOrange, STYLE_DOT, 1);
+    DrawBandLine(BAND_DN, currentMavilimW - band, clrOrange, STYLE_DOT, 1);
+    
+    // Mavilim bilgi etiketi
+    ShowMavilimInfoLabel();
 
     ChartRedraw(0);
+}
+
+#define MAVILIM_INFO_LABEL "GridBot_MavilimInfo"
+
+void ShowMavilimInfoLabel()
+{
+    string trendText = "NÖTR";
+    color trendColor = clrYellow;
+    if(mavilimTrend == 1)
+    {
+        trendText = "YUKARI ↑";
+        trendColor = clrDodgerBlue;
+    }
+    else if(mavilimTrend == -1)
+    {
+        trendText = "AŞAĞI ↓";
+        trendColor = clrRed;
+    }
+    
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double distToMavilim = MathAbs(bid - currentMavilimW) / pointValue / 10.0;
+    string posText = (bid > currentMavilimW) ? "Mavilim ÜSTÜNDE" : "Mavilim ALTINDA";
+    
+    string info = "═══ MAVİLİM W ═══\n" +
+                  "Trend: " + trendText + "\n" +
+                  "Değer: " + DoubleToString(currentMavilimW, _Digits) + "\n" +
+                  "Mesafe: " + DoubleToString(distToMavilim, 1) + " pip\n" +
+                  "Konum: " + posText;
+    
+    if(ObjectFind(0, MAVILIM_INFO_LABEL) < 0)
+    {
+        ObjectCreate(0, MAVILIM_INFO_LABEL, OBJ_LABEL, 0, 0, 0);
+        ObjectSetInteger(0, MAVILIM_INFO_LABEL, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+        ObjectSetInteger(0, MAVILIM_INFO_LABEL, OBJPROP_XDISTANCE, 10);
+        ObjectSetInteger(0, MAVILIM_INFO_LABEL, OBJPROP_YDISTANCE, 80);
+        ObjectSetInteger(0, MAVILIM_INFO_LABEL, OBJPROP_FONTSIZE, 10);
+        ObjectSetString(0, MAVILIM_INFO_LABEL, OBJPROP_FONT, "Consolas");
+        ObjectSetInteger(0, MAVILIM_INFO_LABEL, OBJPROP_BACK, false);
+    }
+    
+    ObjectSetString(0, MAVILIM_INFO_LABEL, OBJPROP_TEXT, info);
+    ObjectSetInteger(0, MAVILIM_INFO_LABEL, OBJPROP_COLOR, trendColor);
 }
 
 void RemoveMavilimLine()
@@ -488,195 +1518,181 @@ void RemoveMavilimLine()
     ObjectDelete(0, MAVILIM_OBJ_NAME);
     ObjectDelete(0, BAND_UP);
     ObjectDelete(0, BAND_DN);
+    ObjectDelete(0, MAVILIM_INFO_LABEL);
     ChartRedraw(0);
 }
 
 //+------------------------------------------------------------------+
 //| Pip boyutu (5-digit: 1 pip=10 point, 3-digit: 1 pip=1 point)    |
-//+------------------------------------------------------------------+
-double GetPipSize()
-{
-    return (_Digits >= 4) ? pointValue * 10.0 : pointValue;
-}
-
-//+------------------------------------------------------------------+
-//| TP FİYATI - Gürültü bandının yakın kenarına                       |
-//| BUY (alttan açılır): TP = Mavilim - noiseBand (bandın alt kenarı) |
-//| SELL (üstten açılır): TP = Mavilim + noiseBand (bandın üst kenarı)|
-//+------------------------------------------------------------------+
-double GetTPPrice(bool isBuy)
-{
-    if(currentMavilimW <= 0) return 0;
-    double noiseBand = GetNoiseBandPoints() * pointValue;
-    if(isBuy)
-        return NormalizeDouble(currentMavilimW - noiseBand, _Digits);
-    else
-        return NormalizeDouble(currentMavilimW + noiseBand, _Digits);
-}
-
-// Pozisyon için geçerli TP (açılış fiyatına göre min kar koruması)
-double GetValidTPForPosition(bool isBuy, double openPrice)
-{
-    double tp = GetTPPrice(isBuy);
-    if(tp <= 0) return 0;
-    double minDist = MinProfitPoints * pointValue;
-    if(isBuy)  { if(tp <= openPrice + minDist) tp = NormalizeDouble(openPrice + minDist, _Digits); }
-    else       { if(tp >= openPrice - minDist) tp = NormalizeDouble(openPrice - minDist, _Digits); }
-    return tp;
-}
-
-//+------------------------------------------------------------------+
-//| KALAN BAKİYE - Rezerv düşülür, margin düşülür; yarısı lot için   |
-//| Mavilim'den uzaklaştıkça LotMultiplier ile lot büyür             |
-//+------------------------------------------------------------------+
-double GetDynamicBaseLot()
-{
-    if(!UseDynamicLot || MaxBalanceUsage <= 0) return BaseLotSize;
-
-    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-    if(balance <= 0) return BaseLotSize;
-
-    double kalanBakiye = balance;
-    if(UseRemainingBalance)
-    {
-        double rezerv = balance * (RezervYuzde / 100.0);
-        double margin = AccountInfoDouble(ACCOUNT_MARGIN);
-        kalanBakiye = balance - rezerv - margin;
-        if(kalanBakiye <= 0) return BaseLotSize;
-    }
-
-    double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
-    double price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-    if(contractSize <= 0 || price <= 0) return BaseLotSize;
-
-    double sumMultiplier = 0;
-    double avgMultiplier = (LotMultiplier1 + LotMultiplier2 + LotMultiplier3) / 3.0;
-    if(MathAbs(avgMultiplier - 1.0) < 0.0001)
-        sumMultiplier = (double)MaxGridOrders;
-    else
-        sumMultiplier = (MathPow(avgMultiplier, MaxGridOrders) - 1.0) / (avgMultiplier - 1.0);
-
-    double maxNotional = kalanBakiye * MaxBalanceUsage;
-    double baseLot = maxNotional / (contractSize * price * sumMultiplier);
-    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-    baseLot = NormalizeLot(MathMax(minLot, MathMin(maxLot, baseLot)));
-    return MathMax(minLot, MathMin(maxLot, baseLot));
-}
-
-//+------------------------------------------------------------------+
-//| TRAILING TP - Fiyat Mavilim'e yaklaşırken TP'yi çek (kar kilitle) |
-//+------------------------------------------------------------------+
-double GetTrailingTP(bool isBuy, double openPrice, double currentTP)
-{
-    if(!UseTrailingTP || currentMavilimW <= 0) return 0;
-    double trailDist = TrailingPips * GetPipSize();
-    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-    double mavilimTP = GetTPPrice(isBuy);
-
-    if(isBuy)
-    {
-        if(bid <= openPrice) return currentTP;
-        double newTP = MathMin(bid - trailDist, mavilimTP);
-        if(newTP > currentTP && newTP > openPrice)
-            return NormalizeDouble(newTP, _Digits);
-    }
-    else
-    {
-        if(ask >= openPrice) return currentTP;
-        double newTP = MathMax(ask + trailDist, mavilimTP);
-        if(newTP < currentTP && newTP < openPrice)
-            return NormalizeDouble(newTP, _Digits);
-    }
-    return currentTP;
-}
-
-//+------------------------------------------------------------------+
-//| GRID YÖNETİMİ - Ana nokta Mavilim; gürültü 1.4x iki tarafta       |
-//| Emirler sadece gürültü x 1.4 bandının DIŞINDA dağılır (TP'ye kadar en kazançlı) |
-//+------------------------------------------------------------------+
-double GetNoiseBandPoints() { return currentATR * BandMultiplier / pointValue; }
 
 void ManageGridSystem()
 {
-    if(!IsTradingAllowed())
-    {
-        DeletePendingOrders();
-        return;
-    }
+    if(!IsTradingAllowed()) return;
+    if(currentMavilimW <= 0) return;
+    if(MOTT_Middle <= 0) return;  // MOTT gerekli
 
     double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-    // Fiyat bandın dışında olmalı
-    double bandDist = currentATR * BandMultiplier;
-    double dist = MathAbs(bid - currentMavilimW);
-    if(dist < bandDist)
+    // Grid mesafelerini oluştur (henüz yoksa veya Mavilim değiştiyse)
+    static double lastMavilim = 0;
+    if(totalGrids == 0 || MathAbs(lastMavilim - currentMavilimW) > currentATR * 0.5)
     {
-        DeletePendingOrders();
+        GenerateGridDistances();
+        lastMavilim = currentMavilimW;
+        // Mavilim değiştiğinde seviye takibini sıfırla
+        ResetLevelTracking();
+        // Mavilim değiştiğinde pending emirleri güncelle
+        if(PendingOrderLevels > 0)
+            DeleteAllPendingOrders();
+    }
+
+    // GÜRÜLTÜ ALANI = MOTT_LowerMid ile MOTT_UpperMid arası
+    // Bu alanda işlem açılmaz
+    // BUY: Fiyat MOTT_LowerMid altında olmalı
+    // SELL: Fiyat MOTT_UpperMid üstünde olmalı
+    
+    bool inNoiseZone = (bid >= MOTT_LowerMid && bid <= MOTT_UpperMid);
+    
+    // Debug: Her 30 saniyede gürültü durumunu logla
+    static datetime lastNoiseLog = 0;
+    if(TimeCurrent() - lastNoiseLog >= 30)
+    {
+        lastNoiseLog = TimeCurrent();
+        double distPip = MathAbs(bid - currentMavilimW) / pointValue / 10.0;
+        Print(">>> NOISE: LowerMid=", MOTT_LowerMid, " UpperMid=", MOTT_UpperMid, " Bid=", bid, " inNoise=", inNoiseZone);
+    }
+    
+    // Gürültü alanındaysa seviye takibini sıfırla ve bekle
+    if(inNoiseZone)
+    {
+        ResetLevelTracking();
         return;
     }
 
+
+
+
+
     bool isPriceAbove = (bid > currentMavilimW);
     bool isPriceBelow = (ask < currentMavilimW);
-
-    if(isPriceAbove && (!SingleDirectionOnly))
+    
+    // BASİT MANTIK: Fiyat Mavilim'in altındaysa BUY, üstündeyse SELL
+    // Confluence kaldırıldı - daha fazla emir açılacak
+    bool buyConfluence = isPriceBelow;   // Fiyat Mavilim altında = BUY
+    bool sellConfluence = isPriceAbove;  // Fiyat Mavilim üstünde = SELL
+    
+    // Debug log - Her 30 saniyede bir durum bilgisi
+    static datetime lastDebugLog = 0;
+    if(TimeCurrent() - lastDebugLog >= 30)
     {
-        if(CountOrders(ORDER_TYPE_SELL_LIMIT) == 0 && CountPositions(POSITION_TYPE_SELL) < MaxGridOrders)
+        lastDebugLog = TimeCurrent();
+        double dist = MathAbs(bid - currentMavilimW);
+        double currentDistPip = dist / pointValue / 10.0;
+        
+        Print(">>> DEBUG: Mavilim=", currentMavilimW, " Bid=", bid, 
+              " Mesafe=", currentDistPip, " pip",
+              " BUY=", buyConfluence, " SELL=", sellConfluence,
+              " inNoise=", inNoiseZone);
+    }
+
+    if(sellConfluence)  // MOTT + Mavilim = SELL
+    {
+        // Fix for SingleDirectionOnly: Eğer tek yön aktifse, ters pozisyon olmamalı
+        bool canSell = (!SingleDirectionOnly) || (CountPositions(POSITION_TYPE_BUY) == 0);
+        
+        // RSI + MACD Filtresi
+        bool rsiMacdOK = CanOpenSellGrid();
+        
+        if(canSell && rsiMacdOK && CountPositions(POSITION_TYPE_SELL) < MaxGridOrders)
         {
-            GenerateGridLevels(currentMavilimW, false);
-            PlacePendingOrders(false);
+            // MESAFE BAZLI EMİR KONTROLÜ
+            CheckAndOpenByDistance(false);  // SELL
         }
     }
 
-    if(isPriceBelow && (!SingleDirectionOnly))
+    if(buyConfluence)  // MOTT + Mavilim = BUY
     {
-        if(CountOrders(ORDER_TYPE_BUY_LIMIT) == 0 && CountPositions(POSITION_TYPE_BUY) < MaxGridOrders)
+        // Fix for SingleDirectionOnly: Eğer tek yön aktifse, ters pozisyon olmamalı
+        bool canBuy = (!SingleDirectionOnly) || (CountPositions(POSITION_TYPE_SELL) == 0);
+        
+        // RSI + MACD Filtresi
+        bool rsiMacdOK = CanOpenBuyGrid();
+
+        if(canBuy && rsiMacdOK && CountPositions(POSITION_TYPE_BUY) < MaxGridOrders)
         {
-            GenerateGridLevels(currentMavilimW, true);
-            PlacePendingOrders(true);
+            // MESAFE BAZLI EMİR KONTROLÜ
+            CheckAndOpenByDistance(true);  // BUY
         }
     }
 }
 
 //+------------------------------------------------------------------+
-//| GRID SEVİYELERİ - İlk seviye gürültü x 1.4 bandının hemen dışında |
-//| Emirler bandın altına/üstüne dağılır, TP'ye gelene kadar en kazançlı senaryo |
+//| SEVİYE TAKİBİ SIFIRLAMA                                          |
 //+------------------------------------------------------------------+
-void GenerateGridLevels(double basePrice, bool isBuy)
+void ResetLevelTracking()
+{
+    ArrayResize(buyLevelUsed, maxTrackedLevels);
+    ArrayResize(sellLevelUsed, maxTrackedLevels);
+    ArrayInitialize(buyLevelUsed, false);
+    ArrayInitialize(sellLevelUsed, false);
+}
+
+//+------------------------------------------------------------------+
+//| GRID MESAFE SEVİYELERİ - Mavilim'den uzaklık (pip cinsinden)      |
+//| DİNAMİK HESAPLAMA - Fiyat uzaklaştıkça yeni seviyeler eklenir     |
+//+------------------------------------------------------------------+
+void GenerateGridDistances()
 {
     totalGrids = 0;
-    ArrayInitialize(gridPrices, 0.0);
+    ArrayResize(gridDistances, maxTrackedLevels);
+    ArrayInitialize(gridDistances, 0.0);
+    
+    // Seviye takibini de başlat
+    ResetLevelTracking();
 
-    ScanForSR();
+    // Gürültü bandından başla (pip cinsinden)
+    double xPip = MathAbs(MOTT_Top - MOTT_Bottom) / pointValue / 10.0;
+    if(xPip < 30) xPip = 50;
+    double startDistPip = xPip * 0.3;
+    double maxPip = xPip * 2.5;
 
-    // Emirler banddan başlar
-    double startDist = currentATR * BandMultiplier;
-    double currentPrice = isBuy ? (basePrice - startDist) : (basePrice + startDist);
-    double stepSize = (150.0 * pointValue);  // 15 pip başlangıç (daha sık emir)
-
-    for(int i = 0; i < MaxGridOrders; i++)
+    // BÖLGE 1: İlk 300 pip - 7 grid
+    double zone1End = 300.0;
+    int zone1Grids = 7;
+    double zone1Step = (zone1End - startDistPip) / zone1Grids;
+    
+    for(int i = 0; i < zone1Grids && startDistPip + i * zone1Step <= zone1End; i++)
     {
-        double targetPrice = currentPrice;
-
-        if(UseSRMagnet)
-        {
-            double sr = FindNearestSR(targetPrice);
-            double range = 250.0 * pointValue;
-            if(sr > 0 && MathAbs(targetPrice - sr) < range) targetPrice = sr;
-        }
-
-        gridPrices[totalGrids] = targetPrice;
+        gridDistances[totalGrids] = startDistPip + i * zone1Step;
         totalGrids++;
-
-        if(isBuy) currentPrice = targetPrice - stepSize;
-        else      currentPrice = targetPrice + stepSize;
-
-        stepSize *= ExpGridRatio;
-
-        if(MathAbs(currentPrice - basePrice) / pointValue > GridEndPip) break;
     }
+    
+    // BÖLGE 2: 300-500 pip - 15 grid
+    double zone2Start = zone1End;
+    double zone2End = 500.0;
+    int zone2Grids = 15;
+    double zone2Step = (zone2End - zone2Start) / zone2Grids;
+    
+    for(int i = 0; i < zone2Grids && zone2Start + i * zone2Step <= zone2End; i++)
+    {
+        gridDistances[totalGrids] = zone2Start + i * zone2Step;
+        totalGrids++;
+    }
+    
+    // BÖLGE 3: Kalan - 20 grid'ye böl
+    double zone3Start = zone2End;
+    int zone3Grids = 20;
+    double remainingDist = maxPip - zone3Start;
+    double zone3Step = remainingDist / zone3Grids;
+    
+    for(int i = 0; i < zone3Grids && zone3Start + i * zone3Step <= maxPip; i++)
+    {
+        gridDistances[totalGrids] = zone3Start + i * zone3Step;
+        totalGrids++;
+    }
+    
+    Print(">>> Grid mesafeleri oluşturuldu: ", totalGrids, " seviye (7+15+20), ilk=", gridDistances[0], " pip, son=", gridDistances[totalGrids-1], " pip");
 }
 
 //+------------------------------------------------------------------+
@@ -756,217 +1772,224 @@ bool IsPriceNearResistance(double price)
 }
 
 //+------------------------------------------------------------------+
-//| EMİR GÖNDERME (type_filling + deviation + lot normalizasyonu)    |
+//| MESAFE BAZLI EMİR AÇMA - MOTT + MAVİLİM EŞZAMANLAMA              |
+//| BUY: MOTT_Bottom yakınında, SELL: MOTT_Top yakınında             |
+//| Mavilim'den uzaklaştıkça daha sık emir açılır                     |
 //+------------------------------------------------------------------+
-void PlacePendingOrders(bool isBuy)
+void CheckAndOpenByDistance(bool isBuy)
 {
     if(!IsTradingAllowed()) return;
-
-    int existingPos = isBuy ? CountPositions(POSITION_TYPE_BUY) : CountPositions(POSITION_TYPE_SELL);
-    double baseLot = UseDynamicLot ? GetDynamicBaseLot() : BaseLotSize;
-
-    for(int i = existingPos; i < totalGrids; i++)
-    {
-        if(MaxOpenPositions > 0 && GetEAPositionCount() >= MaxOpenPositions) break;
-        if(MaxTotalLots > 0 && GetEATotalLots() >= MaxTotalLots) break;
-
-        double price = gridPrices[i];
-        double currentPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
-        // 3 katmanlı lot çarpanı: mesafeye göre
-        double distFromMavilim = MathAbs(price - currentMavilimW) / pointValue;
-        double multiplier;
-        if(distFromMavilim <= Zone1Pip)
-            multiplier = LotMultiplier1;      // İlk 100 pip: 1.1
-        else if(distFromMavilim <= Zone2Pip)
-            multiplier = LotMultiplier2;      // Sonraki 200 pip: 1.3
-        else
-            multiplier = LotMultiplier3;      // Kalan 200 pip: 1.5
-        
-        double lot = NormalizeLot(baseLot * MathPow(multiplier, i));
-
-        if(isBuy && price >= currentPrice) continue;
-        if(!isBuy && price <= currentPrice) continue;
-
-        double tp = GetTPPrice(isBuy);
-        if(tp <= 0) continue;
-        if(isBuy  && tp <= price) continue;   // BUY LIMIT: TP açılışın üstünde olmalı
-        if(!isBuy && tp >= price) continue;   // SELL LIMIT: TP açılışın altında olmalı
-
-        if(UseSRFilterForRecovery)
-        {
-            if(isBuy  && !IsPriceNearSupport(price)) continue;   // BUY sadece destek yakınında
-            if(!isBuy && !IsPriceNearResistance(price)) continue; // SELL sadece direnç yakınında
-        }
-
-        MqlTradeRequest req = {};
-        MqlTradeResult res = {};
-
-        req.action = TRADE_ACTION_PENDING;
-        req.symbol = _Symbol;
-        req.volume = lot;
-        req.price = NormalizeDouble(price, _Digits);
-        req.type = isBuy ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
-        req.magic = MagicNumber;
-        req.tp = tp;
-        req.deviation = SlippagePoints;
-        req.type_filling = GetFillingMode();
-
-        if(!OrderSend(req, res))
-            Print("Emir Gönderme Hatası: ", res.retcode);
-        Sleep(50);
-    }
-}
-
-//+------------------------------------------------------------------+
-//| BAND KAPAMA: İç band -> tümü kapat, Dış band -> yarısını kapat    |
-//+------------------------------------------------------------------+
-void CheckNoiseZoneClose()
-{
     if(currentMavilimW <= 0) return;
-
-    double innerBand = GetNoiseBandPoints() * pointValue;
+    if(MOTT_Middle <= 0) return;
+    if(totalGrids <= 0) return;
+    
     double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-    double distFromMavilim = MathAbs(bid - currentMavilimW);
-
-    bool inBand = (distFromMavilim < innerBand);
-
-    if(!CloseInNoiseZone || !inBand) return;
-
-    for(int i = PositionsTotal() - 1; i >= 0; i--)
-    {
-        ulong ticket = PositionGetTicket(i);
-        if(ticket == 0) continue;
-        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
-
-        double profit = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
-
-        ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-        double vol = PositionGetDouble(POSITION_VOLUME);
-
-        MqlTradeRequest req = {};
-        MqlTradeResult res = {};
-        req.action = TRADE_ACTION_DEAL;
-        req.symbol = _Symbol;
-        req.volume = vol;
-        req.position = ticket;
-        req.deviation = SlippagePoints;
-        req.magic = MagicNumber;
-        req.type_filling = GetFillingMode();
-
-        if(posType == POSITION_TYPE_BUY)
-        {
-            req.type = ORDER_TYPE_SELL;
-            req.price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-        }
-        else
-        {
-            req.type = ORDER_TYPE_BUY;
-            req.price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-        }
-
-        if(OrderSend(req, res))
-            Print(">>> Gürültü bandı kâr kapatma: #", ticket, " profit=", profit);
-        else
-            Print("Gürültü bandı kapatma hatası #", ticket, " retcode=", res.retcode);
-    }
-}
-
-void CloseAllPositions()
-{
-    for(int i = PositionsTotal() - 1; i >= 0; i--)
-    {
-        ulong ticket = PositionGetTicket(i);
-        if(ticket == 0) continue;
-        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
-
-        ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-        double vol = PositionGetDouble(POSITION_VOLUME);
-
-        MqlTradeRequest req = {};
-        MqlTradeResult res = {};
-        req.action = TRADE_ACTION_DEAL;
-        req.symbol = _Symbol;
-        req.volume = vol;
-        req.position = ticket;
-        req.deviation = SlippagePoints;
-        req.magic = MagicNumber;
-        req.type_filling = GetFillingMode();
-
-        if(posType == POSITION_TYPE_BUY)
-        {
-            req.type = ORDER_TYPE_SELL;
-            req.price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-        }
-        else
-        {
-            req.type = ORDER_TYPE_BUY;
-            req.price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-        }
-
-        if(!OrderSend(req, res))
-            Print("Kapatma hatası #", ticket, " retcode=", res.retcode);
-        else
-            Sleep(100);
-    }
-}
-
-void CloseHalfPositions()
-{
-    int totalPos = GetEAPositionCount();
-    if(totalPos <= 1) return;
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double price = isBuy ? ask : bid;
     
-    int toClose = totalPos / 2;
-    int closed = 0;
+    // MOTT SEVİYESİ KONTROLÜ
+    // BUY: Fiyat MOTT_Bottom veya MOTT_LowerMid'e yakın mı?
+    // SELL: Fiyat MOTT_Top veya MOTT_UpperMid'e yakın mı?
+    double mottDistance = 0;
+    double mottTarget = 0;
     
-    for(int i = PositionsTotal() - 1; i >= 0 && closed < toClose; i--)
+    if(isBuy)
     {
-        ulong ticket = PositionGetTicket(i);
-        if(ticket == 0) continue;
-        if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-        if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+        // BUY için: MOTT_Bottom veya LowerMid'e yakınlık
+        double distToBottom = MathAbs(price - MOTT_Bottom);
+        double distToLowerMid = MathAbs(price - MOTT_LowerMid);
+        mottDistance = MathMin(distToBottom, distToLowerMid);
+        mottTarget = (distToBottom < distToLowerMid) ? MOTT_Bottom : MOTT_LowerMid;
+    }
+    else
+    {
+        // SELL için: MOTT_Top veya UpperMid'e yakınlık
+        double distToTop = MathAbs(price - MOTT_Top);
+        double distToUpperMid = MathAbs(price - MOTT_UpperMid);
+        mottDistance = MathMin(distToTop, distToUpperMid);
+        mottTarget = (distToTop < distToUpperMid) ? MOTT_Top : MOTT_UpperMid;
+    }
+    
+    // MOTT seviyesine yakınlık pip cinsinden
+    double mottDistPip = mottDistance / pointValue / 10.0;
+    
+    // Mavilim'den uzaklık (pip cinsinden)
+    double mavilimDistPip = MathAbs(price - currentMavilimW) / pointValue / 10.0;
+    
+    // === YENİ GRİD SİSTEMİ ===
+    // X = MOTT aralığı (temel mesafe birimi)
+    // Gürültü alanı = 0.3X (Mavilim etrafı)
+    // Bölge 1 = X pip, 7 grid (TP'ye yakın = geniş aralık)
+    // Bölge 2 = 1.5X pip, 15 grid (TP'den uzak = sık aralık)
+    // MANTIK: TP'ye yakın geniş grid, uzaklaştıkça sıklaşan grid
+    
+    // GÜRÜLTÜ ALANI = MOTT_LowerMid ile MOTT_UpperMid arası
+    // BUY için fiyat MOTT_LowerMid altında olmalı
+    // SELL için fiyat MOTT_UpperMid üstünde olmalı
+    
+    // Fiyat gürültü alanının içindeyse işlem açma
+    if(price >= MOTT_LowerMid && price <= MOTT_UpperMid)
+        return;
+    
+    // Fiyat doğru tarafta mı kontrol et
+    if(isBuy && price >= MOTT_LowerMid)
+        return;
+    if(!isBuy && price <= MOTT_UpperMid)
+        return;
+    
+    // X = MOTT aralığı pip cinsinden
+    double xPip = MathAbs(MOTT_Top - MOTT_Bottom) / pointValue / 10.0;
+    if(xPip < 30) xPip = 50;  // Minimum 30 pip
+    
+    // Bölge mesafeleri
+    double zone1End = xPip;              // Bölge 1 = X pip
+    double zone2End = xPip * 2.5;        // Bölge 2 = +1.5X pip (toplam 2.5X)
+    
+    int zone1Grids = 7;    // Bölge 1'de 7 grid
+    int zone2Grids = 15;   // Bölge 2'de 15 grid
+    
+    // Gürültü kenarından mesafe
+    double noiseEdge = isBuy ? MOTT_LowerMid : MOTT_UpperMid;
+    double distFromNoise = 0;
+    if(isBuy)
+        distFromNoise = (MOTT_LowerMid - price) / pointValue / 10.0;  // BUY: fiyat LowerMid'in ne kadar altında
+    else
+        distFromNoise = (price - MOTT_UpperMid) / pointValue / 10.0;  // SELL: fiyat UpperMid'in ne kadar üstünde
+    
+    // Mesafe negatifse (gürültü içinde) işlem açma
+    if(distFromNoise < 0)
+        return;
+    
+    // Hangi bölgedeyiz ve grid seviyesi
+    int gridLevel = -1;
+    double gridStep = 0;
+    
+    // TP'YE YAKIN = GENİŞ GRİD, UZAKLAŞTIKÇA SIKLAŞAN GRİD
+    // Bölge 1: Geniş aralık (yakın)
+    // Bölge 2: Sık aralık (uzak)
+    
+    if(distFromNoise < zone1End)
+    {
+        // BÖLGE 1: 7 grid, GENİŞ aralık (TP'ye yakın)
+        gridStep = zone1End / zone1Grids;
+        gridLevel = (int)(distFromNoise / gridStep);
+        if(gridLevel >= zone1Grids) gridLevel = zone1Grids - 1;
+    }
+    else if(distFromNoise < zone2End)
+    {
+        // BÖLGE 2: 15 grid, SIK aralık (TP'den uzak)
+        double zone2Dist = distFromNoise - zone1End;
+        double zone2Range = zone2End - zone1End;  // 1.5X pip
+        gridStep = zone2Range / zone2Grids;
+        gridLevel = zone1Grids + (int)(zone2Dist / gridStep);
+        if(gridLevel >= zone1Grids + zone2Grids) gridLevel = zone1Grids + zone2Grids - 1;
+    }
+    else
+    {
+        // Maksimum emir mesafesinin dışında - işlem yok
+        return;
+    }
 
-        ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-        double vol = PositionGetDouble(POSITION_VOLUME);
+    
+    if(gridLevel < 0) return;
+    
+    // Bu seviyede zaten işlem açıldı mı?
+    if(gridLevel >= maxTrackedLevels) return;
+    bool levelUsed = isBuy ? buyLevelUsed[gridLevel] : sellLevelUsed[gridLevel];
+    if(levelUsed) return;
+    
+    // Bekleme süresi - mesafeye göre azalt
+    int waitSeconds = 10;
+    if(distFromNoise > zone2End * 0.7)
+        waitSeconds = 3;
+    else if(distFromNoise > zone1End)
+        waitSeconds = 5;
+    
+    static datetime lastOrderTime = 0;
+    if(TimeCurrent() - lastOrderTime < waitSeconds) return;
 
-        MqlTradeRequest req = {};
-        MqlTradeResult res = {};
-        req.action = TRADE_ACTION_DEAL;
-        req.symbol = _Symbol;
-        req.volume = vol;
-        req.position = ticket;
-        req.deviation = SlippagePoints;
-        req.magic = MagicNumber;
-        req.type_filling = GetFillingMode();
+    // Pozisyon limiti kontrol
+    if(MaxOpenPositions > 0 && GetEAPositionCount() >= MaxOpenPositions) return;
+    if(MaxTotalLots > 0 && GetEATotalLots() >= MaxTotalLots) return;
 
-        if(posType == POSITION_TYPE_BUY)
+    double baseLot = UseDynamicLot ? GetDynamicBaseLot() : BaseLotSize;
+    
+    // LOT HESAPLAMA: Bölge 1'de küçük, Bölge 2'de büyük
+    double lot;
+    if(gridLevel < zone1Grids)
+    {
+        // Bölge 1: Base lot x 1.0 - 1.5
+        lot = baseLot * (1.0 + (gridLevel * 0.05));
+    }
+    else
+    {
+        // Bölge 2: Base lot x 1.5 - 2.5
+        int zone2Level = gridLevel - zone1Grids;
+        lot = baseLot * (1.5 + (zone2Level * 0.04));
+    }
+    
+    lot = NormalizeLot(lot);
+    
+    double tp = GetTPPrice(isBuy);
+    if(tp <= 0) return;
+    
+    // MARKET EMRİ AÇ
+    MqlTradeRequest req = {};
+    MqlTradeResult res = {};
+
+    req.action = TRADE_ACTION_DEAL;
+    req.symbol = _Symbol;
+    req.volume = lot;
+    req.magic = MagicNumber;
+    req.tp = tp;
+    req.deviation = SlippagePoints;
+    req.type_filling = GetFillingMode();
+
+    if(isBuy)
+    {
+        req.type = ORDER_TYPE_BUY;
+        req.price = ask;
+    }
+    else
+    {
+        req.type = ORDER_TYPE_SELL;
+        req.price = bid;
+    }
+
+    if(OrderSend(req, res))
+    {
+        // Bu seviyeyi kullanıldı olarak işaretle
+        if(gridLevel < maxTrackedLevels)
         {
-            req.type = ORDER_TYPE_SELL;
-            req.price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(isBuy)
+                buyLevelUsed[gridLevel] = true;
+            else
+                sellLevelUsed[gridLevel] = true;
         }
-        else
-        {
-            req.type = ORDER_TYPE_BUY;
-            req.price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-        }
-
-        if(OrderSend(req, res))
-        {
-            Print(">>> Dış band yarı kapatma: #", ticket);
-            closed++;
-            Sleep(100);
-        }
+        
+        lastOrderTime = TimeCurrent();
+        
+        string zoneStr = (gridLevel < zone1Grids) ? "BÖLGE1" : "BÖLGE2";
+        Print(">>> ", zoneStr, " EMİR: ", isBuy ? "BUY" : "SELL",
+              " seviye=", gridLevel, " mesafe=", DoubleToString(distFromNoise, 1), " pip", 
+              " MOTTRange=", DoubleToString(xPip, 1), " lot=", lot,
+              " TP=", tp);
+    }
+    else
+    {
+        Print("Order error: ", res.retcode, " ", res.comment);
     }
 }
 
 //+------------------------------------------------------------------+
-//| POZİSYON YÖNETİMİ - TP güncelleme (yön bazlı)                    |
+//| POZİSYON YÖNETİMİ - TP Mavilim'i takip eder (10 pip yakınında)    |
 //+------------------------------------------------------------------+
 void ManagePositions()
 {
-    if(!ExactMavilimTP || currentMavilimW <= 0) return;
+    if(currentMavilimW <= 0) return;
+
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double minTPUpdateDist = 10 * pointValue;  // 10 pip = güncelleme eşiği
 
     for(int i = PositionsTotal() - 1; i >= 0; i--)
     {
@@ -980,28 +2003,33 @@ void ManagePositions()
         double currentTP = PositionGetDouble(POSITION_TP);
         double currentSL = PositionGetDouble(POSITION_SL);
 
-        double targetTP = GetValidTPForPosition(isBuy, openPrice);
-        if(UseTrailingTP)
-        {
-            double trailingTP = GetTrailingTP(isBuy, openPrice, currentTP);
-            if(trailingTP > 0)
-            {
-                if(isBuy && trailingTP > targetTP) targetTP = trailingTP;
-                if(!isBuy && trailingTP < targetTP) targetTP = trailingTP;
-            }
-        }
+        // TP hedefi = Gürültü bandının kenarı (GetTPPrice kullan)
+        double targetTP = GetTPPrice(isBuy);
+        
+        // Minimum kar mesafesi kontrolü (en az 10 pip kar)
+        double minProfitDist = 10 * pointValue;
+        if(isBuy && targetTP < openPrice + minProfitDist)
+            targetTP = NormalizeDouble(openPrice + minProfitDist, _Digits);
+        if(!isBuy && targetTP > openPrice - minProfitDist)
+            targetTP = NormalizeDouble(openPrice - minProfitDist, _Digits);
+        
         if(targetTP <= 0) continue;
-        if(MathAbs(currentTP - targetTP) <= 10 * pointValue) continue;
+        
+        // TP değişikliği 10 pip'ten az ise güncelleme yapma (gereksiz istek önleme)
+        if(MathAbs(currentTP - targetTP) < minTPUpdateDist) continue;
 
         MqlTradeRequest req = {};
         MqlTradeResult res = {};
         req.action = TRADE_ACTION_SLTP;
         req.position = ticket;
+        req.symbol = _Symbol;
         req.tp = targetTP;
         req.sl = currentSL;
 
-        if(!OrderSend(req, res))
-            Print("TP Güncelleme Hatası: ", res.retcode);
+        if(OrderSend(req, res))
+            Print(">>> TP GÜNCELLENDİ: #", ticket, " Yeni TP=", targetTP, " (Mavilim=", currentMavilimW, ")");
+        else
+            Print("TP Güncelleme Hatası: ", res.retcode, " ", res.comment);
     }
 }
 
@@ -1052,5 +2080,280 @@ void DeletePendingOrders()
             Print("Silme Hatası: ", res.retcode);
     }
 }
+
 //+------------------------------------------------------------------+
+//| RSI HESAPLAMA                                                     |
+//+------------------------------------------------------------------+
+double CalculateRSI()
+{
+    double rsi[];
+    ArraySetAsSeries(rsi, true);
+    int handle = iRSI(_Symbol, PERIOD_M3, RSIPeriod, PRICE_CLOSE);
+    if(handle == INVALID_HANDLE) return 50.0;  // Nötr değer
+    if(CopyBuffer(handle, 0, 0, 1, rsi) < 1)
+    {
+        IndicatorRelease(handle);
+        return 50.0;
+    }
+    IndicatorRelease(handle);
+    return rsi[0];
+}
+
+//+------------------------------------------------------------------+
+//| MACD HESAPLAMA                                                    |
+//+------------------------------------------------------------------+
+void CalculateMACD()
+{
+    double macdMain[], macdSignal[];
+    ArraySetAsSeries(macdMain, true);
+    ArraySetAsSeries(macdSignal, true);
+    
+    int handle = iMACD(_Symbol, PERIOD_M3, MACDFast, MACDSlow, MACDSignal, PRICE_CLOSE);
+    if(handle == INVALID_HANDLE)
+    {
+        currentMACD = 0.0;
+        currentMACDSignal = 0.0;
+        return;
+    }
+    
+    if(CopyBuffer(handle, 0, 0, 1, macdMain) < 1 || CopyBuffer(handle, 1, 0, 1, macdSignal) < 1)
+    {
+        IndicatorRelease(handle);
+        currentMACD = 0.0;
+        currentMACDSignal = 0.0;
+        return;
+    }
+    
+    IndicatorRelease(handle);
+    currentMACD = macdMain[0];
+    currentMACDSignal = macdSignal[0];
+}
+
+//+------------------------------------------------------------------+
+//| RSI SİNYAL KONTROL                                                |
+//+------------------------------------------------------------------+
+bool IsRSIBuySignal()
+{
+    if(!UseRSIFilter) return true;
+    return (currentRSI <= RSIOversold);  // Aşırı satım = BUY sinyali
+}
+
+bool IsRSISellSignal()
+{
+    if(!UseRSIFilter) return true;
+    return (currentRSI >= RSIOverbought);  // Aşırı alım = SELL sinyali
+}
+
+//+------------------------------------------------------------------+
+//| MACD TREND KONTROL                                                |
+//+------------------------------------------------------------------+
+bool IsMACDBullish()
+{
+    if(!UseMACDFilter) return true;
+    return (currentMACD > currentMACDSignal);  // MACD > Sinyal = Yükseliş
+}
+
+bool IsMACDBearish()
+{
+    if(!UseMACDFilter) return true;
+    return (currentMACD < currentMACDSignal);  // MACD < Sinyal = Düşüş
+}
+
+//+------------------------------------------------------------------+
+//| KOMBİNE FİLTRE: RSI + MACD                                        |
+//| Mean Reversion: Aşırı bölgede + Trend onayı = İşlem aç            |
+//+------------------------------------------------------------------+
+bool CanOpenBuyGrid()
+{
+    // BUY için: RSI aşırı satımda VE MACD yükseliş trendinde
+    // Eğer filtreler kapalıysa her zaman true döner
+    bool rsiOK = IsRSIBuySignal();
+    bool macdOK = IsMACDBullish();
+    
+    // Her iki filtre de aktifse, ikisi de olumlu olmalı
+    // Eğer sadece biri aktifse, sadece o kontrol edilir
+    if(UseRSIFilter && UseMACDFilter)
+        return (rsiOK && macdOK);
+    else if(UseRSIFilter)
+        return rsiOK;
+    else if(UseMACDFilter)
+        return macdOK;
+    
+    return true;  // Hiçbir filtre aktif değilse, işlem aç
+}
+
+bool CanOpenSellGrid()
+{
+    // SELL için: RSI aşırı alımda VE MACD düşüş trendinde
+    bool rsiOK = IsRSISellSignal();
+    bool macdOK = IsMACDBearish();
+    
+    if(UseRSIFilter && UseMACDFilter)
+        return (rsiOK && macdOK);
+    else if(UseRSIFilter)
+        return rsiOK;
+    else if(UseMACDFilter)
+        return macdOK;
+    
+    return true;
+}
+//+------------------------------------------------------------------+
+void CalculateHTFTrend()
+{
+    // HTF (15dk) trend takibi - Şimdilik sadece tanımlıyoruz
+    HTF_Trend = 0;
+}
+
+//+------------------------------------------------------------------+
+//| PENDING ORDER YÖNETİMİ - Yakın 5 seviyeye limit emir at           |
+//+------------------------------------------------------------------+
+void ManagePendingOrders()
+{
+    if(PendingOrderLevels <= 0) return;
+    if(!IsTradingAllowed()) return;
+    if(currentMavilimW <= 0) return;
+    if(MOTT_Middle <= 0) return;
+    
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    
+    // X = MOTT aralığı pip cinsinden
+    double xPip = MathAbs(MOTT_Top - MOTT_Bottom) / pointValue / 10.0;
+    if(xPip < 30) xPip = 50;
+    
+    double noiseDistPip = xPip * 0.3;
+    double noiseBandDist = noiseDistPip * pointValue * 10.0;
+    double noiseTop = currentMavilimW + noiseBandDist;
+    double noiseBottom = currentMavilimW - noiseBandDist;
+    
+    // Fiyat gürültü alanındaysa pending emir atma
+    bool inNoiseZone = (bid > noiseBottom && bid < noiseTop);
+    if(inNoiseZone)
+    {
+        DeleteAllPendingOrders();
+        return;
+    }
+    
+    double baseLot = UseDynamicLot ? GetDynamicBaseLot() : BaseLotSize;
+    
+    // Bölge hesaplamaları
+    double zone1End = xPip;
+    int zone1Grids = 7;
+    double zone1Step = zone1End / zone1Grids;
+    
+    // Fiyat Mavilim'in altındaysa BUY pending, üstündeyse SELL pending
+    bool isPriceAbove = (bid > currentMavilimW);
+    
+    // Mevcut pending emirleri kontrol et
+    int existingBuyLimits = CountOrders(ORDER_TYPE_BUY_LIMIT);
+    int existingSellLimits = CountOrders(ORDER_TYPE_SELL_LIMIT);
+    
+    if(isPriceAbove)
+    {
+        // Fiyat üstte - SELL LIMIT emirleri at (fiyatın üstüne)
+        if(existingSellLimits < PendingOrderLevels)
+        {
+            for(int i = existingSellLimits; i < PendingOrderLevels && i < zone1Grids; i++)
+            {
+                double distPip = noiseDistPip + (i * zone1Step);
+                double orderPrice = currentMavilimW + (distPip * pointValue * 10.0);
+                
+                // Fiyat mevcut fiyatın üstünde olmalı (SELL LIMIT)
+                if(orderPrice <= ask) continue;
+                
+                double lot = NormalizeLot(baseLot * (1.0 + (i * 0.05)));
+                double tp = GetTPPrice(false);
+                
+                PlacePendingOrdersForLevel(i, false, orderPrice, lot, tp);
+            }
+        }
+    }
+    else
+    {
+        // Fiyat altta - BUY LIMIT emirleri at (fiyatın altına)
+        if(existingBuyLimits < PendingOrderLevels)
+        {
+            for(int i = existingBuyLimits; i < PendingOrderLevels && i < zone1Grids; i++)
+            {
+                double distPip = noiseDistPip + (i * zone1Step);
+                double orderPrice = currentMavilimW - (distPip * pointValue * 10.0);
+                
+                // Fiyat mevcut fiyatın altında olmalı (BUY LIMIT)
+                if(orderPrice >= bid) continue;
+                
+                double lot = NormalizeLot(baseLot * (1.0 + (i * 0.05)));
+                double tp = GetTPPrice(true);
+                
+                PlacePendingOrdersForLevel(i, true, orderPrice, lot, tp);
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| BELİRLİ SEVİYEYE PENDING ORDER AT                                 |
+//+------------------------------------------------------------------+
+void PlacePendingOrdersForLevel(int level, bool isBuy, double price, double lot, double tp)
+{
+    // Bu seviyede zaten emir var mı kontrol et
+    for(int i = OrdersTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = OrderGetTicket(i);
+        if(ticket == 0) continue;
+        if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+        if(OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
+        
+        double orderPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+        if(MathAbs(orderPrice - price) < pointValue * 50) // 5 pip tolerans
+            return; // Bu seviyede zaten emir var
+    }
+    
+    MqlTradeRequest req = {};
+    MqlTradeResult res = {};
+    
+    req.action = TRADE_ACTION_PENDING;
+    req.symbol = _Symbol;
+    req.volume = lot;
+    req.magic = MagicNumber;
+    req.tp = tp;
+    req.type_filling = GetFillingMode();
+    req.price = NormalizeDouble(price, _Digits);
+    
+    if(isBuy)
+        req.type = ORDER_TYPE_BUY_LIMIT;
+    else
+        req.type = ORDER_TYPE_SELL_LIMIT;
+    
+    if(OrderSend(req, res))
+    {
+        Print(">>> PENDING: ", isBuy ? "BUY_LIMIT" : "SELL_LIMIT",
+              " seviye=", level, " fiyat=", price, " lot=", lot, " TP=", tp);
+    }
+    else
+    {
+        Print("Pending order error: ", res.retcode, " ", res.comment);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| TÜM PENDING EMİRLERİ SİL                                          |
+//+------------------------------------------------------------------+
+void DeleteAllPendingOrders()
+{
+    for(int i = OrdersTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = OrderGetTicket(i);
+        if(ticket == 0) continue;
+        if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+        if(OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
+        
+        MqlTradeRequest req = {};
+        MqlTradeResult res = {};
+        req.action = TRADE_ACTION_REMOVE;
+        req.order = ticket;
+        
+        if(OrderSend(req, res))
+            Print(">>> Pending emir silindi: ", ticket);
+    }
+}
 
